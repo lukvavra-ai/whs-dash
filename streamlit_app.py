@@ -46,6 +46,35 @@ def _coerce_date(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _weekday_short(wd: int) -> str:
+    # 1..7
+    return {1: "Po", 2: "Út", 3: "St", 4: "Čt", 5: "Pá", 6: "So", 7: "Ne"}.get(int(wd), str(wd))
+
+
+def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    rename_map = {}
+
+    if "iso_weekday" in df.columns and "weekday" not in df.columns:
+        rename_map["iso_weekday"] = "weekday"
+
+    if "vydejky_unique" in df.columns and "orders_nunique" not in df.columns:
+        rename_map["vydejky_unique"] = "orders_nunique"
+
+    if rename_map:
+        df = df.rename(columns=rename_map)
+
+    if "weekday" in df.columns:
+        df["weekday"] = pd.to_numeric(df["weekday"], errors="coerce")
+
+    if "weekday" in df.columns and "weekday_name" not in df.columns:
+        weekday_map = {1: "Po", 2: "Út", 3: "St", 4: "Čt", 5: "Pá", 6: "So", 7: "Ne"}
+        df["weekday_name"] = df["weekday"].map(weekday_map)
+
+    return df
+
+
 def load_sources(base_dir: Path) -> Tuple[Sources, List[str]]:
     missing: List[str] = []
 
@@ -56,7 +85,9 @@ def load_sources(base_dir: Path) -> Tuple[Sources, List[str]]:
             missing.append(fn)
             return None
         df = _read_csv(p)
-        return _coerce_date(df)
+        df = _coerce_date(df)
+        df = _normalize_columns(df)
+        return df
 
     src = Sources(
         packed_daily=try_load("packed_daily"),
@@ -78,12 +109,6 @@ def available_metrics(df: pd.DataFrame) -> List[str]:
     return out
 
 
-
-def _weekday_short(wd: int) -> str:
-    # 1..7
-    return {1: "Po", 2: "Út", 3: "St", 4: "Čt", 5: "Pá", 6: "So", 7: "Ne"}.get(int(wd), str(wd))
-
-
 def _xkey(iso_week: int, weekday: int) -> str:
     return f"KT{int(iso_week):02d} {_weekday_short(int(weekday))}"
 
@@ -103,7 +128,6 @@ def _week_day_grid(
     g = d.groupby(["iso_year", "iso_week", "weekday"], dropna=False)[metric].sum().reset_index()
     g["x"] = g.apply(lambda r: _xkey(r["iso_week"], r["weekday"]), axis=1)
 
-    # stable ordering of x
     xs = []
     for w in range(int(week_start), int(week_end) + 1):
         for wd in range(1, 8):
@@ -142,7 +166,6 @@ def forecast_for_weeks(
     if not train_years:
         return pd.DataFrame()
 
-    # Absolute baseline (used by dynamic/static + for hybrid adjustment)
     baseline = baseline_from_years(d, metric, train_years)
 
     df_eval = d[d["iso_year"] == eval_year].copy()
@@ -163,7 +186,6 @@ def forecast_for_weeks(
         v = baseline[(baseline["iso_week"] == iso_week) & (baseline["weekday"] == weekday)][metric]
         return float(v.mean()) if not v.empty else 0.0
 
-    # --- Static YTD factor vs absolute baseline (Po–Pá only) ---
     static_factor = 1.0
     ytd_eval = _po_pa(df_eval[df_eval["date"] <= last_date].copy())
     current_ytd = float(ytd_eval[metric].sum())
@@ -174,7 +196,6 @@ def forecast_for_weeks(
     expected_ytd = float(merged[f"{metric}_base"].fillna(0.0).sum())
     static_factor = (current_ytd / expected_ytd) if expected_ytd > 0 else 1.0
 
-    # --- Calendar index model pieces ---
     def standard_day_for_year(y: int) -> float:
         dd = d[d["iso_year"] == y].copy()
         dd = _po_pa(dd)
@@ -182,22 +203,19 @@ def forecast_for_weeks(
         vals = vals[vals > 0]
         if vals.empty:
             return 0.0
-        # median is robust vs spikes
         return float(vals.median())
 
     std_by_year = {int(y): standard_day_for_year(int(y)) for y in train_years}
     std_by_year = {y: v for y, v in std_by_year.items() if v > 0}
 
     if std_by_year:
-        # recency weights: newer years higher weight
         ys = sorted(std_by_year.keys())
-        weights = {y: (i + 1) for i, y in enumerate(ys)}  # 1..n
+        weights = {y: (i + 1) for i, y in enumerate(ys)}
         wsum = sum(weights.values())
         standard_day_hist = sum(std_by_year[y] * weights[y] for y in ys) / wsum
     else:
         standard_day_hist = 0.0
 
-    # index(iso_week, weekday): average ratio across years (value / standard_day_year)
     idx_rows = []
     if standard_day_hist > 0 and std_by_year:
         for y in train_years:
@@ -221,7 +239,6 @@ def forecast_for_weeks(
         v = idx_profile[(idx_profile["iso_week"] == iso_week) & (idx_profile["weekday"] == weekday)]["idx"]
         return float(v.mean()) if not v.empty else 0.0
 
-    # YTD strength vs train years (Po–Pá), aligned by (iso_week, weekday) pairs present in eval YTD
     strength_factor = 1.0
     if current_ytd > 0:
         pairs = ytd_eval[["iso_week", "weekday"]].drop_duplicates()
@@ -234,7 +251,6 @@ def forecast_for_weeks(
         hist_mean = float(np.mean([s for s in hist_sums if s > 0])) if hist_sums else 0.0
         strength_factor = (current_ytd / hist_mean) if hist_mean > 0 else 1.0
 
-    # calendar baseline for this eval year
     calendar_base = standard_day_hist * strength_factor if standard_day_hist > 0 else 0.0
 
     rows = []
@@ -243,7 +259,6 @@ def forecast_for_weeks(
             if (not include_weekend) and wd > 5:
                 continue
 
-            # make a real date in eval_year for that iso week/day (ISO calendar)
             try:
                 dt = datetime.date.fromisocalendar(int(eval_year), int(w), int(wd))
             except ValueError:
@@ -268,20 +283,17 @@ def forecast_for_weeks(
                 yhat = calendar_base * base * manual_factor
 
             elif mode == "hybrid":
-                # calendar core
                 idxv = idx_value(w, wd)
                 yhat = calendar_base * idxv
 
-                # short-term adjustment: remove global YTD component from dynamic factor
                 dyn = dynamic_trend_factor(df_eval, baseline, metric, day, lookback_weeks)
                 adj = (dyn / static_factor) if static_factor > 0 else dyn
                 yhat = yhat * adj * manual_factor
                 factor = adj
 
-                base = idxv  # for debug
+                base = idxv
 
             else:
-                # fallback to static
                 base = baseline_value(w, wd)
                 factor = static_factor
                 yhat = base * factor * manual_factor
@@ -312,6 +324,8 @@ def forecast_for_weeks(
     out["x"] = pd.Categorical(out["x"], categories=xs, ordered=True)
     out = out.sort_values(["x"]).reset_index(drop=True)
     return out
+
+
 def filter_range(df: pd.DataFrame, date_col: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
     d = df.copy()
     d = d[d[date_col].notna()]
@@ -327,13 +341,11 @@ def weekly_totals(df: pd.DataFrame, metric: str) -> pd.DataFrame:
 
 def baseline_from_years(df: pd.DataFrame, metric: str, train_years: List[int]) -> pd.DataFrame:
     d = df[df["iso_year"].isin(train_years)].copy()
-    # baseline per (iso_week, weekday) across years
     b = d.groupby(["iso_week", "weekday"], dropna=False)[metric].mean().reset_index()
     return b
 
 
 def dynamic_trend_factor(df_eval: pd.DataFrame, baseline: pd.DataFrame, metric: str, dt: pd.Timestamp, lookback_weeks: int) -> float:
-    # Use previous N weeks (ending yesterday) to compute strength/trend.
     if lookback_weeks <= 0:
         return 1.0
 
@@ -345,8 +357,9 @@ def dynamic_trend_factor(df_eval: pd.DataFrame, baseline: pd.DataFrame, metric: 
 
     current_sum = float(hist[metric].sum())
 
-    # expected sum from baseline for the same (iso_week, weekday) combos
-    merged = hist[["iso_week", "weekday", metric]].merge(baseline, on=["iso_week", "weekday"], how="left", suffixes=("", "_base"))
+    merged = hist[["iso_week", "weekday", metric]].merge(
+        baseline, on=["iso_week", "weekday"], how="left", suffixes=("", "_base")
+    )
     expected_sum = float(merged[f"{metric}_base"].fillna(0.0).sum())
 
     if expected_sum <= 0:
@@ -386,13 +399,13 @@ def forecast_dates(
         v = baseline[(baseline["iso_week"] == iso_week) & (baseline["weekday"] == weekday)][metric]
         return float(v.mean()) if not v.empty else 0.0
 
-    # static_ytd factor
     static_factor = 1.0
     if mode == "static_ytd":
-        # Expected YTD from baseline for eval-year dates
         ytd = df_eval[df_eval["date"] <= last_date].copy()
         current_ytd = float(ytd[metric].sum())
-        merged = ytd[["iso_week", "weekday", metric]].merge(baseline, on=["iso_week", "weekday"], how="left", suffixes=("", "_base"))
+        merged = ytd[["iso_week", "weekday", metric]].merge(
+            baseline, on=["iso_week", "weekday"], how="left", suffixes=("", "_base")
+        )
         expected_ytd = float(merged[f"{metric}_base"].fillna(0.0).sum())
         static_factor = (current_ytd / expected_ytd) if expected_ytd > 0 else 1.0
 
@@ -402,7 +415,7 @@ def forecast_dates(
         day = start + pd.Timedelta(days=i)
         iso = day.isocalendar()
         wk = int(iso.week)
-        wd = int(iso.weekday)  # 1..7
+        wd = int(iso.weekday)
         base = baseline_value(wk, wd)
 
         if mode == "dynamic_rolling":
@@ -412,7 +425,17 @@ def forecast_dates(
 
         manual_factor = 1.0 + (manual_adj_pct / 100.0)
         yhat = base * factor * manual_factor
-        rows.append({"date": day, "iso_week": wk, "weekday": wd, "baseline": base, "trend_factor": factor, "manual_adj_pct": manual_adj_pct, "forecast": yhat})
+        rows.append(
+            {
+                "date": day,
+                "iso_week": wk,
+                "weekday": wd,
+                "baseline": base,
+                "trend_factor": factor,
+                "manual_adj_pct": manual_adj_pct,
+                "forecast": yhat,
+            }
+        )
 
     out = pd.DataFrame(rows)
     return out, float(static_factor)
@@ -428,7 +451,6 @@ def backtest_year(
     start_date: Optional[pd.Timestamp],
     end_date: Optional[pd.Timestamp],
 ) -> pd.DataFrame:
-    """Compute prediction for an existing year (e.g., 2026) using only previous years."""
     d = df.copy()
     d = d[d["date"].notna()].copy()
 
@@ -448,12 +470,12 @@ def backtest_year(
     df_eval = df_eval[(df_eval["date"] >= start_date) & (df_eval["date"] <= end_date)].copy()
     baseline = baseline_from_years(d, metric, train_years)
 
-    # static factor for the whole backtest window (optional)
     static_factor = 1.0
     if mode == "static_ytd":
-        # build expected vs actual within the same window
         current_sum = float(df_eval[metric].sum())
-        merged = df_eval[["iso_week", "weekday", metric]].merge(baseline, on=["iso_week", "weekday"], how="left", suffixes=("", "_base"))
+        merged = df_eval[["iso_week", "weekday", metric]].merge(
+            baseline, on=["iso_week", "weekday"], how="left", suffixes=("", "_base")
+        )
         expected_sum = float(merged[f"{metric}_base"].fillna(0.0).sum())
         static_factor = (current_sum / expected_sum) if expected_sum > 0 else 1.0
 
@@ -471,7 +493,15 @@ def backtest_year(
             factor = static_factor
 
         manual_factor = 1.0 + (manual_adj_pct / 100.0)
-        preds.append({"date": day, "forecast": base * factor * manual_factor, "trend_factor": factor, "baseline": base, "manual_adj_pct": manual_adj_pct})
+        preds.append(
+            {
+                "date": day,
+                "forecast": base * factor * manual_factor,
+                "trend_factor": factor,
+                "baseline": base,
+                "manual_adj_pct": manual_adj_pct,
+            }
+        )
 
     out = pd.DataFrame(preds)
     out = out.merge(df_eval[["date", metric]], on="date", how="left")
@@ -486,15 +516,10 @@ def plot_multi_year_lines_weekly(df: pd.DataFrame, metric: str, anchor_week: int
     if w.empty:
         st.info("V tomhle rozsahu nejsou data.")
         return
-    # weekly totals per year
     wt = weekly_totals(w, metric)
     fig = px.line(wt, x="iso_week", y=metric, color="iso_year", markers=True, title=title)
     fig.update_traces(connectgaps=False)
     st.plotly_chart(fig, width="stretch")
-
-
-
-
 
 
 def tab_balení(src: Sources) -> None:
@@ -504,7 +529,6 @@ def tab_balení(src: Sources) -> None:
         st.error("Chybí packed_daily_kpis.csv")
         return
 
-    # Shift selection (All / day / night)
     shift_col = None
     if src.packed_shift is not None and not src.packed_shift.empty:
         if "shift_name" in src.packed_shift.columns:
@@ -521,7 +545,7 @@ def tab_balení(src: Sources) -> None:
         shift_opts,
         index=0,
         key="pk_shift_sel",
-        format_func=lambda x: "Celkem" if x=="all" else ("Denní" if x=="day" else ("Noční" if x=="night" else x)),
+        format_func=lambda x: "Celkem" if x == "all" else ("Denní" if x == "day" else ("Noční" if x == "night" else x)),
     )
 
     if shift_sel == "all":
@@ -529,8 +553,9 @@ def tab_balení(src: Sources) -> None:
     else:
         df = src.packed_shift.copy()
         df = df[df[shift_col].astype(str) == shift_sel].copy()
-        # keep daily grain
-        df = df.groupby(["date","iso_year","iso_week","weekday","weekday_name"], dropna=False).sum(numeric_only=True).reset_index()
+
+        group_cols = [c for c in ["date", "iso_year", "iso_week", "weekday", "weekday_name"] if c in df.columns]
+        df = df.groupby(group_cols, dropna=False).sum(numeric_only=True).reset_index()
 
     if "date" not in df.columns:
         st.error("V packed_daily_kpis.csv chybí 'date'.")
@@ -556,14 +581,12 @@ def tab_balení(src: Sources) -> None:
         "orders_nunique": "Výdejky (unikátní)",
     }
 
-    # Default metric set (if exists)
     default_metrics = [m for m in ["binhits", "gross_tons", "pallets_count", "cartons_count", "orders_nunique"] if m in metrics_all]
     if not default_metrics:
         default_metrics = metrics_all[:1]
 
     st.markdown("### Pohled: vybrané KT → Po–Ne (roky vedle sebe + predikce)")
 
-    # Controls (single configuration for all charts)
     c1, c2, c3, c4 = st.columns([3, 1, 1, 2])
     with c1:
         metrics_sel = st.multiselect(
@@ -578,7 +601,12 @@ def tab_balení(src: Sources) -> None:
     with c3:
         week_end = st.number_input("KT do", min_value=1, max_value=53, value=10, step=1, key="wk_end")
     with c4:
-        include_weekend = st.checkbox("Víkendy?", value=False, key="wk_weekend", help="Kompletace víkend občas má (protažení). Predikce se dá zobrazit i na víkendové dny.")
+        include_weekend = st.checkbox(
+            "Víkendy?",
+            value=False,
+            key="wk_weekend",
+            help="Kompletace víkend občas má (protažení). Predikce se dá zobrazit i na víkendové dny.",
+        )
 
     c5, c6 = st.columns([4, 3])
     with c5:
@@ -600,11 +628,9 @@ def tab_balení(src: Sources) -> None:
         st.info("Vyber aspoň jednu metriku.")
         return
 
-    # Keep an explicit order (so we can reorder)
     if "wk_metrics_order" not in st.session_state:
         st.session_state["wk_metrics_order"] = list(metrics_sel)
 
-    # Sync: keep only selected, preserve order, append new selections at end
     order = [m for m in st.session_state["wk_metrics_order"] if m in metrics_sel]
     for mtr in metrics_sel:
         if mtr not in order:
@@ -612,7 +638,6 @@ def tab_balení(src: Sources) -> None:
     st.session_state["wk_metrics_order"] = order
     metrics_ordered = order
 
-    # Reorder UI
     st.markdown("#### Pořadí metrik")
     cpo1, cpo2, cpo3, cpo4 = st.columns([3, 1, 1, 3])
     with cpo1:
@@ -621,22 +646,20 @@ def tab_balení(src: Sources) -> None:
         if st.button("⬆️ nahoru", key="wk_order_up"):
             i = metrics_ordered.index(picked)
             if i > 0:
-                metrics_ordered[i-1], metrics_ordered[i] = metrics_ordered[i], metrics_ordered[i-1]
+                metrics_ordered[i - 1], metrics_ordered[i] = metrics_ordered[i], metrics_ordered[i - 1]
                 st.session_state["wk_metrics_order"] = metrics_ordered
     with cpo3:
         if st.button("⬇️ dolů", key="wk_order_down"):
             i = metrics_ordered.index(picked)
             if i < len(metrics_ordered) - 1:
-                metrics_ordered[i+1], metrics_ordered[i] = metrics_ordered[i], metrics_ordered[i+1]
+                metrics_ordered[i + 1], metrics_ordered[i] = metrics_ordered[i], metrics_ordered[i + 1]
                 st.session_state["wk_metrics_order"] = metrics_ordered
     with cpo4:
         st.caption("Tip: vyber metriku a posuň ji nahoru/dolů. Pořadí se použije pro grafy pod sebou.")
 
-    # Ensure eval_year is in selection (helps managers)
     if eval_year not in years_sel:
         years_sel = years_sel + [eval_year]
 
-    # Forecast controls (shared)
     c7, c8, c9 = st.columns([2, 3, 2])
     with c7:
         trend_mode = st.selectbox(
@@ -644,7 +667,15 @@ def tab_balení(src: Sources) -> None:
             ["hybrid", "calendar_index", "dynamic_rolling", "static_ytd"],
             index=0,
             key="wk_fc_mode",
-            format_func=lambda x: ("Hybrid (kalendář × krátkodobý trend)" if x=="hybrid" else ("Kalendář (index KT×den + síla roku)" if x=="calendar_index" else ("Dynamický (rolling týdny)" if x=="dynamic_rolling" else "Statický (okno/YTD)"))),
+            format_func=lambda x: (
+                "Hybrid (kalendář × krátkodobý trend)"
+                if x == "hybrid"
+                else (
+                    "Kalendář (index KT×den + síla roku)"
+                    if x == "calendar_index"
+                    else ("Dynamický (rolling týdny)" if x == "dynamic_rolling" else "Statický (okno/YTD)")
+                )
+            ),
             disabled=not show_forecast,
         )
     with c8:
@@ -652,11 +683,9 @@ def tab_balení(src: Sources) -> None:
     with c9:
         manual_adj = st.slider("Korekce predikce (%)", -30, 30, 0, key="wk_fc_adj", disabled=not show_forecast)
 
-    # Store grids/forecasts so we can render table+odchylky at the very end
     grids: Dict[str, pd.DataFrame] = {}
     fcs: Dict[str, pd.DataFrame] = {}
 
-    # Render each metric as its own chart stacked vertically
     for metric in metrics_ordered:
         st.markdown(f"#### {metric_labels.get(metric, metric)}")
 
@@ -707,7 +736,6 @@ def tab_balení(src: Sources) -> None:
 
         st.plotly_chart(fig, width="stretch")
 
-    # ===== Detail block at the end (table + deviations) =====
     st.markdown("---")
     st.markdown("### Detail (tabulka + odchylky)")
 
@@ -768,7 +796,6 @@ def tab_balení(src: Sources) -> None:
             st.info("Nemám překryv (2026 × predikce) v tomto výřezu.")
 
 
-
 def tab_nakladky(src: Sources) -> None:
     st.subheader("Nakládky (Výdeje) 🚚")
 
@@ -776,32 +803,39 @@ def tab_nakladky(src: Sources) -> None:
         st.error("Chybí loaded_daily_kpis.csv")
         return
 
-    # Shift selection (All / morning / afternoon)
     shift_opts = ["all"]
     if src.loaded_shift is not None and not src.loaded_shift.empty and "shift_name" in src.loaded_shift.columns:
         shift_opts += sorted(src.loaded_shift["shift_name"].dropna().unique().astype(str).tolist())
 
-    shift_sel = st.selectbox("Směna", shift_opts, index=0, key="ld_shift_sel",
-                             format_func=lambda x: "Celkem" if x=="all" else ("Ranní" if x=="morning" else ("Odpolední" if x=="afternoon" else x)))
+    shift_sel = st.selectbox(
+        "Směna",
+        shift_opts,
+        index=0,
+        key="ld_shift_sel",
+        format_func=lambda x: "Celkem" if x == "all" else ("Ranní" if x == "morning" else ("Odpolední" if x == "afternoon" else x)),
+    )
 
     if shift_sel == "all":
         df = src.loaded_daily.copy()
     else:
         df = src.loaded_shift.copy()
         df = df[df["shift_name"].astype(str) == shift_sel].copy()
-        df = df.groupby(["date","iso_year","iso_week","weekday","weekday_name"], dropna=False).sum(numeric_only=True).reset_index()
+        df = df.groupby(["date", "iso_year", "iso_week", "weekday", "weekday_name"], dropna=False).sum(numeric_only=True).reset_index()
 
     if "date" not in df.columns:
         st.error("V loaded_daily_kpis.csv chybí 'date'.")
         return
 
-    # Expected load metrics
     preferred = ["trips_total", "trips_export", "trips_europe", "containers_count", "gross_tons"]
     metrics_all = [m for m in preferred if m in df.columns]
 
     missing = [m for m in preferred if m not in df.columns]
     if missing:
-        st.warning("Chybí metriky v loaded_daily_kpis.csv: " + ", ".join(missing) + ". Pokud čekáš, že tam mají být, přegeneruj KPI skriptem build_loaded_kpis_from_vydeje_v3.py.")
+        st.warning(
+            "Chybí metriky v loaded_daily_kpis.csv: "
+            + ", ".join(missing)
+            + ". Pokud čekáš, že tam mají být, přegeneruj KPI skriptem build_loaded_kpis_from_vydeje_v3.py."
+        )
 
     if not metrics_all:
         st.error("Nenalezl jsem očekávané metriky pro nakládky.")
@@ -856,7 +890,6 @@ def tab_nakladky(src: Sources) -> None:
         st.info("Vyber aspoň jednu metriku.")
         return
 
-    # Ordering
     if "ld_metrics_order" not in st.session_state:
         st.session_state["ld_metrics_order"] = list(metrics_sel)
 
@@ -870,26 +903,28 @@ def tab_nakladky(src: Sources) -> None:
     st.markdown("#### Pořadí metrik")
     cpo1, cpo2, cpo3 = st.columns([3, 1, 1])
     with cpo1:
-        picked = st.selectbox("Vybraná metrika", metrics_ordered,
-                              format_func=lambda m: metric_labels.get(m, m),
-                              key="ld_order_pick")
+        picked = st.selectbox(
+            "Vybraná metrika",
+            metrics_ordered,
+            format_func=lambda m: metric_labels.get(m, m),
+            key="ld_order_pick",
+        )
     with cpo2:
         if st.button("⬆️", key="ld_up"):
             i = metrics_ordered.index(picked)
             if i > 0:
-                metrics_ordered[i-1], metrics_ordered[i] = metrics_ordered[i], metrics_ordered[i-1]
+                metrics_ordered[i - 1], metrics_ordered[i] = metrics_ordered[i], metrics_ordered[i - 1]
                 st.session_state["ld_metrics_order"] = metrics_ordered
     with cpo3:
         if st.button("⬇️", key="ld_down"):
             i = metrics_ordered.index(picked)
             if i < len(metrics_ordered) - 1:
-                metrics_ordered[i+1], metrics_ordered[i] = metrics_ordered[i], metrics_ordered[i+1]
+                metrics_ordered[i + 1], metrics_ordered[i] = metrics_ordered[i], metrics_ordered[i + 1]
                 st.session_state["ld_metrics_order"] = metrics_ordered
 
     if eval_year not in years_sel:
         years_sel = years_sel + [eval_year]
 
-    # Forecast controls
     c6, c7, c8 = st.columns([2, 3, 2])
     with c6:
         trend_mode = st.selectbox(
@@ -898,7 +933,15 @@ def tab_nakladky(src: Sources) -> None:
             index=0,
             key="ld_fc_mode",
             disabled=not show_forecast,
-            format_func=lambda x: ("Hybrid (kalendář × krátkodobý trend)" if x=="hybrid" else ("Kalendář (index KT×den + síla roku)" if x=="calendar_index" else ("Dynamický (rolling týdny)" if x=="dynamic_rolling" else "Statický (okno/YTD)"))),
+            format_func=lambda x: (
+                "Hybrid (kalendář × krátkodobý trend)"
+                if x == "hybrid"
+                else (
+                    "Kalendář (index KT×den + síla roku)"
+                    if x == "calendar_index"
+                    else ("Dynamický (rolling týdny)" if x == "dynamic_rolling" else "Statický (okno/YTD)")
+                )
+            ),
         )
     with c7:
         lookback_weeks = st.slider("Trend okno (týdny)", 2, 26, 8, key="ld_fc_weeks", disabled=not show_forecast)
@@ -906,7 +949,7 @@ def tab_nakladky(src: Sources) -> None:
         manual_adj = st.slider("Korekce predikce (%)", -30, 30, 0, key="ld_fc_adj", disabled=not show_forecast)
 
     grids, fcs = {}, {}
-    include_weekend = False  # never for loads
+    include_weekend = False
 
     for metric in metrics_ordered:
         st.markdown(f"#### {metric_labels.get(metric, metric)}")
@@ -990,7 +1033,6 @@ def tab_nakladky(src: Sources) -> None:
 
     st.dataframe(pivot, width="stretch")
 
-    # Odchylka 2026 vs predikce (stejně jako u balení)
     if show_forecast and (not fc.empty) and (eval_year in keep_years_existing):
         st.markdown("#### Odchylka 2026 vs predikce (v tomhle výřezu)")
         actual_2026 = grid[grid["iso_year"] == eval_year][["x", detail_metric]].rename(columns={detail_metric: "actual"})
@@ -1040,19 +1082,39 @@ def tab_predikce(src: Sources) -> None:
     with c1:
         horizon = st.slider("Horizont (dní dopředu)", 3, 14, 5, key="pred_h_days")
     with c2:
-        mode = st.selectbox("Trend mód", ["hybrid", "calendar_index", "dynamic_rolling", "static_ytd"], index=0, key="pred_mode",
-                            format_func=lambda x: ("Hybrid (kalendář × krátkodobý trend)" if x=="hybrid" else ("Kalendář (index KT×den + síla roku)" if x=="calendar_index" else ("Dynamický (rolling týdny)" if x=="dynamic_rolling" else "Statický (okno/YTD)"))))
+        mode = st.selectbox(
+            "Trend mód",
+            ["hybrid", "calendar_index", "dynamic_rolling", "static_ytd"],
+            index=0,
+            key="pred_mode",
+            format_func=lambda x: (
+                "Hybrid (kalendář × krátkodobý trend)"
+                if x == "hybrid"
+                else (
+                    "Kalendář (index KT×den + síla roku)"
+                    if x == "calendar_index"
+                    else ("Dynamický (rolling týdny)" if x == "dynamic_rolling" else "Statický (okno/YTD)")
+                )
+            ),
+        )
     with c3:
         lookback_weeks = st.slider("Trend okno (týdny)", 2, 26, 8, key="pred_lb_weeks")
     with c4:
         manual_adj = st.slider("Korekce predikce (%)", -30, 30, 0, key="pred_adj")
 
-    fc, static_factor = forecast_dates(df, metric, eval_year=eval_year, horizon_days=horizon, lookback_weeks=lookback_weeks, mode=mode, manual_adj_pct=float(manual_adj))
+    fc, static_factor = forecast_dates(
+        df,
+        metric,
+        eval_year=eval_year,
+        horizon_days=horizon,
+        lookback_weeks=lookback_weeks,
+        mode=mode,
+        manual_adj_pct=float(manual_adj),
+    )
     if fc.empty:
         st.info("Není dost dat pro predikci.")
         return
 
-    # Plot: last ~60 days actual + forecast horizon
     df_eval = df[df["iso_year"] == eval_year].copy().sort_values("date")
     tail = df_eval.tail(60)[["date", metric]].rename(columns={metric: "value"}).assign(series="Historie")
     fut = fc[["date", "forecast"]].rename(columns={"forecast": "value"}).assign(series="Predikce")
