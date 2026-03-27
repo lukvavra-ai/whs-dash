@@ -599,7 +599,7 @@ def tab_balení(src: Sources) -> None:
     with c2:
         week_start = st.number_input("KT od", min_value=1, max_value=53, value=6, step=1, key="wk_start")
     with c3:
-        week_end = st.number_input("KT do", min_value=1, max_value=53, value=10, step=1, key="wk_end")
+        week_end = st.number_input("KT do", min_value=1, max_value=53, value=20, step=1, key="wk_end")
     with c4:
         include_weekend = st.checkbox(
             "Víkendy?",
@@ -870,7 +870,8 @@ def tab_nakladky(src: Sources) -> None:
     with c2:
         week_start = st.number_input("KT od", 1, 53, 6, key="ld_start")
     with c3:
-        week_end = st.number_input("KT do", 1, 53, 10, key="ld_end")
+        week_end = st.number_input("KT do", 1, 53, 20
+                                , key="ld_end")
 
     c4, c5 = st.columns([4, 3])
     with c4:
