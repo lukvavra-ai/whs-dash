@@ -1178,6 +1178,8 @@ def _render_staffing_tab(bundle: StaffingBundle) -> None:
     fig.update_traces(connectgaps=False)
     st.plotly_chart(fig, use_container_width=True)
 
+    st.caption("Kmen je v plánu omezený na nedávno pozorovanou kapacitu srovnatelných dnů. Přebytek jde do agentury; `capacity gap` ukazuje, že teoretická potřeba je nad běžnou kapacitou.")
+
     card_horizons = [5, 10, 20, 30]
     cols = st.columns(len(card_horizons))
     for col, horizon_day in zip(cols, card_horizons):
@@ -1215,6 +1217,9 @@ def _render_staffing_tab(bundle: StaffingBundle) -> None:
                 "weekday",
                 "forecast_binhits",
                 "required_headcount_ceiling",
+                "recent_total_capacity",
+                "capacity_gap_headcount",
+                "kmen_capacity_cap",
                 "required_kmen",
                 "required_agency",
                 "required_day_shift_workers",
