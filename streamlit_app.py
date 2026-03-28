@@ -1149,7 +1149,7 @@ def _render_staffing_tab(bundle: StaffingBundle) -> None:
     if not horizon.empty:
         horizon["date"] = pd.to_datetime(horizon["date"])
 
-    metric_map = {
+    metric_map_all = {
         "Binhits celkem": ("binhits", "forecast_binhits"),
         "Binhits den": ("packed_day_binhits", "forecast_day_binhits"),
         "Binhits noc": ("packed_night_binhits", "forecast_night_binhits"),
@@ -1163,6 +1163,14 @@ def _render_staffing_tab(bundle: StaffingBundle) -> None:
         "Placené hodiny": ("att_hours", "required_paid_hours"),
         "Produktivní workers": ("prod_workers", "required_productive_workers_ceiling"),
     }
+    metric_map = {
+        label: cols
+        for label, cols in metric_map_all.items()
+        if cols[1] in forecast.columns and (actuals.empty or cols[0] in actuals.columns or cols[0] == "binhits")
+    }
+    if not metric_map:
+        st.warning("Staffing exporty nemají očekávané sloupce pro zobrazení grafu.")
+        return
 
     c1, c2 = st.columns([2, 3])
     with c1:
@@ -1218,31 +1226,35 @@ def _render_staffing_tab(bundle: StaffingBundle) -> None:
         st.dataframe(horizon, use_container_width=True, hide_index=True)
 
     st.markdown("#### Staffing forecast tabulka")
-    st.dataframe(
-        forecast[
-            [
-                "date",
-                "weekday",
-                "forecast_day_binhits",
-                "forecast_night_binhits",
-                "forecast_binhits",
-                "required_headcount_ceiling",
-                "capacity_gap_headcount",
-                "kmen_early_capacity_cap",
-                "kmen_late_capacity_cap",
-                "required_kmen_early",
-                "required_kmen_late",
-                "required_agency_day",
-                "required_agency_night",
-                "required_kmen",
-                "required_agency",
-                "required_day_shift_workers",
-                "required_night_shift_workers",
-            ]
-        ].head(horizon_days),
-        use_container_width=True,
-        hide_index=True,
-    )
+    preferred_cols = [
+        "date",
+        "weekday",
+        "forecast_day_binhits",
+        "forecast_night_binhits",
+        "forecast_binhits",
+        "required_headcount_ceiling",
+        "capacity_gap_headcount",
+        "kmen_early_capacity_cap",
+        "kmen_late_capacity_cap",
+        "required_kmen_early",
+        "required_kmen_late",
+        "required_agency_day",
+        "required_agency_night",
+        "required_kmen",
+        "required_agency",
+        "required_day_shift_workers",
+        "required_night_shift_workers",
+    ]
+    available_cols = [col for col in preferred_cols if col in forecast.columns]
+    if available_cols:
+        st.dataframe(
+            forecast[available_cols].head(horizon_days),
+            use_container_width=True,
+            hide_index=True,
+        )
+    missing_cols = [col for col in preferred_cols if col not in forecast.columns]
+    if missing_cols:
+        st.caption("Některé nové staffing sloupce v exportu chybí: " + ", ".join(missing_cols[:6]) + ("..." if len(missing_cols) > 6 else ""))
 
 
 def tab_predikce(src: Sources, staffing_bundle: StaffingBundle) -> None:
