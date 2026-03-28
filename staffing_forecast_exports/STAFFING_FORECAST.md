@@ -1,22 +1,22 @@
 # Staffing Forecast
 
 - Run date: 2026-03-27
-- Binhits forecast model: internal
+- Day binhits forecast model: internal
+- Night binhits forecast model: internal
 - Binhits last actual date: 2026-03-27
 - Attendance last actual date: 2026-03-21
-- Median binhits per paid hour: 2.76
-- Median binhits per productive hour: 7.37
-- Median paid hours per person: 9.15
+- Median day binhits per paid hour: 2.71
+- Median night binhits per paid hour: 2.65
 
 ## Staffing Logic
 
-- Forecast daily binhits.
-- Convert binhits to paid and productive hours using recent weekday productivity.
-- Convert required hours to people using recent hours-per-person.
-- Split total people into kmen and agentura using recent attendance mix.
-- Split productive workers into day and night using recent shift shares from TimeManagement/Data.
+- Forecast day and night binhits separately.
+- Convert shift binhits to paid hours with recent weekday productivity for the same shift.
+- Hold `kmen` in fixed buckets: early (06-14 proxy) and late (14-22 proxy).
+- Let agency absorb flex separately for day and night based on remaining required hours.
+- Keep a total productive-workers estimate as a secondary view for operations.
 
 ## Notes
 
-- Staffing backtest is conditional on actual binhits for the day.
-- End-to-end planning error is therefore staffing-ratio error plus binhits forecast error.
+- `required_kmen_*` is anchored to recent positive observed weekday capacity, not free reallocation.
+- End-to-end planning error is staffing-ratio error plus shift-level binhits forecast error.
