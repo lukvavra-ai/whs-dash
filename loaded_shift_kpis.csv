@@ -2168,3 +2168,4 @@ shift_start,shift_name,date,iso_year,iso_week,weekday,weekday_name,trips_total,t
 2026-03-25 14:00:00,afternoon,2026-03-25,2026,13,3,Wednesday,55,0,55,0,478,567.98787
 2026-03-26 02:00:00,morning,2026-03-26,2026,13,4,Thursday,32,10,22,3,229,430.21133
 2026-03-26 14:00:00,afternoon,2026-03-26,2026,13,4,Thursday,44,0,44,0,516,439.5088
+2026-03-27 02:00:00,morning,2026-03-27,2026,13,5,Friday,31,20,11,15,140,434.77321
