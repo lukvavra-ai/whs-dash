@@ -47,6 +47,8 @@ ADVANCED_MODELS = [
     "10 Smart blend",
 ]
 
+FAST_BACKTEST_POINTS = 14
+
 TREND_TO_ADVANCED_MODEL = {
     "static_ytd": "04 Static YTD",
     "dynamic_rolling": "05 Dynamic rolling",
@@ -583,8 +585,8 @@ def compute_model_suite(
 
     min_train = min(max(90, len(series) // 2), max(len(series) - 21, 30))
     eval_dates = list(series.index[min_train:]) if len(series) > min_train else []
-    if len(eval_dates) > 56:
-        eval_dates = eval_dates[-56:]
+    if len(eval_dates) > FAST_BACKTEST_POINTS:
+        eval_dates = eval_dates[-FAST_BACKTEST_POINTS:]
 
     regular_raw = _regularize_daily(raw_df)
     backtest_rows: List[Dict[str, object]] = []
@@ -1052,15 +1054,25 @@ def _render_prediction_models(src: Sources) -> None:
         manual_adj = int(st.slider("Korekce (%)", -30, 30, 0, key="pred_adj"))
 
     lookback_weeks = int(st.slider("Trend okno pro trendové modely", 2, 26, 8, key="pred_lookback"))
-    include_weekend = bool(source_key == "packed" and st.checkbox("Zahrnout víkendy do trendových modelů", value=False, key="pred_weekend"))
+    if source_key == "packed":
+        include_weekend = bool(st.checkbox("Zahrnout víkendy do zobrazení a forecastu", value=False, key="pred_weekend"))
+    else:
+        include_weekend = False
+        st.caption("Nakládky se na kartě Predikce zobrazují bez víkendů.")
 
-    suite = compute_model_suite(df, linked_df, metric, horizon, lookback_weeks, include_weekend)
+    effective_horizon = int(horizon if include_weekend else max(horizon + 12, round(horizon * 1.6)))
+
+    with st.spinner("Počítám forecast a backtest modelů..."):
+        suite = compute_model_suite(df, linked_df, metric, effective_horizon, lookback_weeks, include_weekend)
     if suite["future"].empty:
         st.info("Na predikci zatím není dost dat.")
         return
 
     future = suite["future"].copy()
     future["date"] = pd.to_datetime(future["date"])
+    if not include_weekend:
+        future = future[future["date"].dt.weekday < 5].copy()
+    future = future.head(horizon).copy()
     forecast_series = future.set_index("date")[model_name]
     forecast_series = _apply_manual_adjustment(forecast_series, manual_adj)
     scores = suite["scores"].copy()
@@ -1068,6 +1080,8 @@ def _render_prediction_models(src: Sources) -> None:
     weights = suite["weights"].copy()
 
     actual = _daily_series(df, metric)
+    if not include_weekend:
+        actual = actual[actual.index.weekday < 5]
     tail = actual.tail(90).reset_index()
     tail.columns = ["date", "value"]
     tail["series"] = "Historie"
@@ -1136,8 +1150,16 @@ def _render_staffing_tab(bundle: StaffingBundle) -> None:
         horizon["date"] = pd.to_datetime(horizon["date"])
 
     metric_map = {
-        "Binhits": ("binhits", "forecast_binhits"),
+        "Binhits celkem": ("binhits", "forecast_binhits"),
+        "Binhits den": ("packed_day_binhits", "forecast_day_binhits"),
+        "Binhits noc": ("packed_night_binhits", "forecast_night_binhits"),
         "Potřebný headcount": ("att_headcount", "required_headcount_ceiling"),
+        "Kmen ráno": ("att_kmen_early_headcount", "required_kmen_early"),
+        "Kmen odpo": ("att_kmen_late_headcount", "required_kmen_late"),
+        "Agentura den": ("att_agency_day_headcount", "required_agency_day"),
+        "Agentura noc": ("att_agency_night_headcount", "required_agency_night"),
+        "Denní směna": ("day_att_headcount", "required_day_shift_workers"),
+        "Noční směna": ("night_att_headcount", "required_night_shift_workers"),
         "Placené hodiny": ("att_hours", "required_paid_hours"),
         "Produktivní workers": ("prod_workers", "required_productive_workers_ceiling"),
     }
@@ -1163,6 +1185,8 @@ def _render_staffing_tab(bundle: StaffingBundle) -> None:
     fig = px.line(plot_df, x="date", y="value", color="series", markers=True, title=metric_label)
     fig.update_traces(connectgaps=False)
     st.plotly_chart(fig, use_container_width=True)
+
+    st.caption("Kmen je držený v pevných bucketech `ráno` a `odpo`. Forecast počítá zvlášť denní a noční binhits; agentura dopočítává jen zbylou flexibilitu pro den a noc.")
 
     card_horizons = [5, 10, 20, 30]
     cols = st.columns(len(card_horizons))
@@ -1199,8 +1223,17 @@ def _render_staffing_tab(bundle: StaffingBundle) -> None:
             [
                 "date",
                 "weekday",
+                "forecast_day_binhits",
+                "forecast_night_binhits",
                 "forecast_binhits",
                 "required_headcount_ceiling",
+                "capacity_gap_headcount",
+                "kmen_early_capacity_cap",
+                "kmen_late_capacity_cap",
+                "required_kmen_early",
+                "required_kmen_late",
+                "required_agency_day",
+                "required_agency_night",
                 "required_kmen",
                 "required_agency",
                 "required_day_shift_workers",
