@@ -1049,18 +1049,15 @@ def _render_prediction_models(src: Sources) -> None:
     with c2:
         model_name = st.selectbox("Model", ADVANCED_MODELS, index=ADVANCED_MODELS.index("10 Smart blend"), key="pred_model")
     with c3:
-        horizon = int(st.slider("Horizont (dní)", 5, 120, 30, key="pred_horizon"))
+        horizon = int(st.slider("Horizont (pracovní dny)", 5, 120, 30, key="pred_horizon"))
     with c4:
         manual_adj = int(st.slider("Korekce (%)", -30, 30, 0, key="pred_adj"))
 
     lookback_weeks = int(st.slider("Trend okno pro trendové modely", 2, 26, 8, key="pred_lookback"))
-    if source_key == "packed":
-        include_weekend = bool(st.checkbox("Zahrnout víkendy do zobrazení a forecastu", value=False, key="pred_weekend"))
-    else:
-        include_weekend = False
-        st.caption("Nakládky se na kartě Predikce zobrazují bez víkendů.")
+    include_weekend = False
+    st.caption("Na kartě Predikce se zobrazují jen pracovní dny.")
 
-    effective_horizon = int(horizon if include_weekend else max(horizon + 12, round(horizon * 1.6)))
+    effective_horizon = int(max(horizon + 12, round(horizon * 1.6)))
 
     with st.spinner("Počítám forecast a backtest modelů..."):
         suite = compute_model_suite(df, linked_df, metric, effective_horizon, lookback_weeks, include_weekend)
@@ -1142,12 +1139,15 @@ def _render_staffing_tab(bundle: StaffingBundle) -> None:
 
     forecast = bundle.forecast.copy()
     forecast["date"] = pd.to_datetime(forecast["date"])
+    forecast = forecast[forecast["date"].dt.weekday < 5].copy()
     actuals = bundle.actuals.copy() if bundle.actuals is not None else pd.DataFrame()
     if not actuals.empty:
         actuals["date"] = pd.to_datetime(actuals["date"])
+        actuals = actuals[actuals["date"].dt.weekday < 5].copy()
     horizon = bundle.horizon.copy() if bundle.horizon is not None else pd.DataFrame()
     if not horizon.empty:
         horizon["date"] = pd.to_datetime(horizon["date"])
+        horizon = horizon[horizon["date"].dt.weekday < 5].copy()
 
     metric_map_all = {
         "Binhits celkem": ("binhits", "forecast_binhits"),
@@ -1176,7 +1176,7 @@ def _render_staffing_tab(bundle: StaffingBundle) -> None:
     with c1:
         metric_label = st.selectbox("Staffing metrika", list(metric_map.keys()), key="staff_metric")
     with c2:
-        horizon_days = int(st.slider("Horizont staffing grafu", 5, 90, 30, key="staff_horizon"))
+        horizon_days = int(st.slider("Horizont staffing grafu (pracovní dny)", 5, 90, 30, key="staff_horizon"))
 
     actual_col, forecast_col = metric_map[metric_label]
 
@@ -1194,16 +1194,15 @@ def _render_staffing_tab(bundle: StaffingBundle) -> None:
     fig.update_traces(connectgaps=False)
     st.plotly_chart(fig, use_container_width=True)
 
-    st.caption("Kmen je držený v pevných bucketech `ráno` a `odpo`. Forecast počítá zvlášť denní a noční binhits; agentura dopočítává jen zbylou flexibilitu pro den a noc.")
+    st.caption("Kmen je držený v pevných bucketech `ráno` a `odpo`. Forecast počítá zvlášť denní a noční binhits; agentura dopočítává jen zbylou flexibilitu pro den a noc. Víkendy jsou ze zobrazení skryté.")
 
     card_horizons = [5, 10, 20, 30]
     cols = st.columns(len(card_horizons))
     for col, horizon_day in zip(cols, card_horizons):
-        row = horizon[horizon["horizon_days"] == horizon_day] if not horizon.empty else pd.DataFrame()
-        if row.empty:
+        if len(forecast) < horizon_day:
             col.metric(f"{horizon_day} dní", "n/a")
             continue
-        val = float(row.iloc[0][forecast_col]) if forecast_col in row.columns else np.nan
+        val = float(forecast.iloc[horizon_day - 1][forecast_col]) if forecast_col in forecast.columns else np.nan
         col.metric(f"{horizon_day} dní", _format_num(val, 1))
 
     if bundle.driver_backtests is not None and not bundle.driver_backtests.empty:
