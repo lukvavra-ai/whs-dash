@@ -1054,16 +1054,25 @@ def _render_prediction_models(src: Sources) -> None:
         manual_adj = int(st.slider("Korekce (%)", -30, 30, 0, key="pred_adj"))
 
     lookback_weeks = int(st.slider("Trend okno pro trendové modely", 2, 26, 8, key="pred_lookback"))
-    include_weekend = bool(source_key == "packed" and st.checkbox("Zahrnout víkendy do trendových modelů", value=False, key="pred_weekend"))
+    if source_key == "packed":
+        include_weekend = bool(st.checkbox("Zahrnout víkendy do zobrazení a forecastu", value=False, key="pred_weekend"))
+    else:
+        include_weekend = False
+        st.caption("Nakládky se na kartě Predikce zobrazují bez víkendů.")
+
+    effective_horizon = int(horizon if include_weekend else max(horizon + 12, round(horizon * 1.6)))
 
     with st.spinner("Počítám forecast a backtest modelů..."):
-        suite = compute_model_suite(df, linked_df, metric, horizon, lookback_weeks, include_weekend)
+        suite = compute_model_suite(df, linked_df, metric, effective_horizon, lookback_weeks, include_weekend)
     if suite["future"].empty:
         st.info("Na predikci zatím není dost dat.")
         return
 
     future = suite["future"].copy()
     future["date"] = pd.to_datetime(future["date"])
+    if not include_weekend:
+        future = future[future["date"].dt.weekday < 5].copy()
+    future = future.head(horizon).copy()
     forecast_series = future.set_index("date")[model_name]
     forecast_series = _apply_manual_adjustment(forecast_series, manual_adj)
     scores = suite["scores"].copy()
@@ -1071,6 +1080,8 @@ def _render_prediction_models(src: Sources) -> None:
     weights = suite["weights"].copy()
 
     actual = _daily_series(df, metric)
+    if not include_weekend:
+        actual = actual[actual.index.weekday < 5]
     tail = actual.tail(90).reset_index()
     tail.columns = ["date", "value"]
     tail["series"] = "Historie"
