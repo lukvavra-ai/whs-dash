@@ -664,7 +664,7 @@ def _window_dates_for_year(eval_year: int, week_start: int, week_end: int, inclu
 def _date_option_label(value: str) -> str:
     day = pd.Timestamp(value)
     iso = day.isocalendar()
-    return f"{day:%Y-%m-%d} | KT{int(iso.week):02d} {WEEKDAY_SHORT.get(int(iso.day), '?')}"
+    return f"{day:%Y-%m-%d} | KT{int(iso.week):02d} {WEEKDAY_SHORT.get(int(iso.weekday), '?')}"
 
 
 def _drop_selected_dates(df: pd.DataFrame, drop_dates: Sequence[str]) -> pd.DataFrame:
