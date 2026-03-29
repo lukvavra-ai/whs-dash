@@ -1,0 +1,39 @@
+{
+  "generated_at": "2026-03-29T13:59:41",
+  "results": [
+    {
+      "case": "baleni_binhits",
+      "best_model": "02 Same weekday median",
+      "best_wape": 0.14591551087924673,
+      "smart_blend_wape": 0.14591551087924673,
+      "drivers_selected": 12
+    },
+    {
+      "case": "baleni_gross_tons",
+      "best_model": "10 Smart blend",
+      "best_wape": 0.18830898368822632,
+      "smart_blend_wape": 0.18830898368822632,
+      "drivers_selected": 12
+    },
+    {
+      "case": "nakladky_trips_total",
+      "best_model": "02 Same weekday median",
+      "best_wape": 0.1980392156862745,
+      "smart_blend_wape": 0.1980392156862745,
+      "drivers_selected": 12
+    },
+    {
+      "case": "nakladky_containers",
+      "best_model": "02 Same weekday median",
+      "best_wape": 0.38028169014084506,
+      "smart_blend_wape": 0.38028169014084506,
+      "drivers_selected": 12
+    }
+  ],
+  "operational_window_rows": 45,
+  "ignore_day_options": 40,
+  "sample_drop_days": [
+    "2026-02-02",
+    "2026-02-03"
+  ]
+}

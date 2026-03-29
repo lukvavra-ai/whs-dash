@@ -47,6 +47,66 @@ ADVANCED_MODELS = [
     "10 Smart blend",
 ]
 
+MODEL_DESCRIPTIONS = {
+    "01 Seasonal baseline": "Jednoduchy sezonni benchmark podle podobnych dni v historii.",
+    "02 Same weekday median": "Median poslednich srovnatelnych dnu stejneho weekdaye. Casto velmi stabilni pro provozni KPI.",
+    "03 Rolling median 4 weeks": "Kratkodoby robustni trend z poslednich 4 tydnu bez slozitych driveru.",
+    "04 Static YTD": "Historicka sezonnost upravena o tempo aktualniho roku.",
+    "05 Dynamic rolling": "Historicka sezonnost upravena jen kratkodobym trendem poslednich tydnu.",
+    "06 Calendar index": "Kalendarny model podle pozice v roce a typicke sily dne.",
+    "07 Hybrid calendar x trend": "Kombinace kalendarniho indexu a kratkodobeho trendu. Dobry default pro operativu.",
+    "08 Ridge internal": "Strojovy model jen z internich skladu a provoznich dat.",
+    "09 Ridge with drivers": "Strojovy model s vybranymi drivere z prijmu, skladu, navazanych toku a world-state proxy.",
+    "10 Smart blend": "Automaticky vybere nejlepsi kombinaci top modelu. Kdyz blend nepomaha, drzi se nejlepsiho modelu.",
+}
+
+DRIVER_FAMILY_LABELS = {
+    "self": "Stejny proces",
+    "linked": "Navazany proces",
+    "wh": "Sklad a prijmy",
+    "ws": "Globalni signal",
+}
+
+DRIVER_LABELS = {
+    "binhits": "Binhits",
+    "gross_tons": "GW (t)",
+    "cartons_count": "Kartony",
+    "pallets_count": "Palety",
+    "vydejky_unique": "Vydejky",
+    "trips_total": "Trips celkem",
+    "trips_export": "Trips export",
+    "trips_europe": "Trips Evropa",
+    "containers_count": "Kontejnery",
+    "orders_nunique": "Objednavky",
+    "packing_gross_kg": "Baleni kg",
+    "packing_orders": "Baleni objednavky",
+    "packing_lines": "Baleni radky",
+    "packing_pallets": "Baleni palety",
+    "outbound_gross_kg": "Vydeje kg",
+    "outbound_docs": "Vydeje doklady",
+    "outbound_lines": "Vydeje radky",
+    "outbound_qty": "Vydeje kusy",
+    "net_flow_kg": "Net flow kg",
+    "inventory_total_gross_kg": "Stav skladu kg",
+    "inbound_gross_kg": "Prijmy kg",
+    "inbound_docs": "Prijmy doklady",
+    "inbound_lines": "Prijmy radky",
+    "inbound_consumables_gross_kg": "Prijmy consumables kg",
+    "inbound_equipment_gross_kg": "Prijmy equipment kg",
+    "inbound_other_gross_kg": "Prijmy other kg",
+    "inbound_customs_gross_kg": "Prijmy customs kg",
+    "inbound_unknown_gross_kg": "Prijmy unknown kg",
+    "esab_close": "Akcie ESAB",
+    "esab_close_4w_pct": "ESAB 4w zmena",
+    "energy_stress_index": "Energy stress",
+    "europe_demand_index": "Europe demand",
+    "container_stress_index": "Container stress",
+    "geo_event_index": "Geo event risk",
+    "export_risk_index": "Export risk",
+    "local_operability_index": "Local operability",
+    "overall_world_risk_index": "Overall world risk",
+}
+
 FAST_BACKTEST_POINTS = 14
 
 TREND_TO_ADVANCED_MODEL = {
@@ -509,6 +569,84 @@ def _legacy_forecast_series(
     return pd.Series(preds, index=future_idx)
 
 
+def _lagged_feature_block(frame: pd.DataFrame, lags: Sequence[int]) -> pd.DataFrame:
+    if frame is None or frame.empty:
+        return pd.DataFrame()
+    base = frame.astype(float).sort_index()
+    out = pd.DataFrame(index=base.index)
+    for col in base.columns:
+        for lag in lags:
+            out[f"{col}_lag{int(lag)}"] = base[col].shift(int(lag))
+    return out
+
+
+def _select_driver_features(target_series: pd.Series, exog: pd.DataFrame, max_features: int = 12) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if exog is None or exog.empty:
+        return pd.DataFrame(index=target_series.index), pd.DataFrame(columns=["feature", "score", "corr_full", "corr_recent", "n_obs"])
+
+    target = target_series.astype(float).sort_index()
+    aligned = exog.reindex(target.index).replace([np.inf, -np.inf], np.nan)
+    stats_rows: List[Dict[str, float]] = []
+    recent_idx = target.index[-min(180, len(target)) :]
+
+    for col in aligned.columns:
+        x = pd.to_numeric(aligned[col], errors="coerce")
+        mask = x.notna() & target.notna()
+        if int(mask.sum()) < 90:
+            continue
+        if x[mask].nunique(dropna=True) < 2 or target[mask].nunique(dropna=True) < 2:
+            continue
+        corr_full = float(x[mask].corr(target[mask]))
+        recent_x = x.reindex(recent_idx)
+        recent_y = target.reindex(recent_idx)
+        recent_mask = recent_x.notna() & recent_y.notna()
+        if int(recent_mask.sum()) >= 40 and recent_x[recent_mask].nunique(dropna=True) >= 2 and recent_y[recent_mask].nunique(dropna=True) >= 2:
+            corr_recent = float(recent_x[recent_mask].corr(recent_y[recent_mask]))
+        else:
+            corr_recent = corr_full
+        score = 0.65 * abs(corr_full) + 0.35 * abs(corr_recent)
+        if pd.isna(score) or score < 0.05:
+            continue
+        stats_rows.append(
+            {
+                "feature": col,
+                "score": float(score),
+                "corr_full": float(corr_full),
+                "corr_recent": float(corr_recent),
+                "n_obs": int(mask.sum()),
+            }
+        )
+
+    if not stats_rows:
+        return pd.DataFrame(index=target.index), pd.DataFrame(columns=["feature", "score", "corr_full", "corr_recent", "n_obs"])
+
+    stats = pd.DataFrame(stats_rows).sort_values(["score", "n_obs"], ascending=[False, False]).reset_index(drop=True)
+    selected_cols: List[str] = []
+    for row in stats.itertuples():
+        candidate = aligned[row.feature].ffill().bfill()
+        too_close = False
+        for picked in selected_cols:
+            picked_series = aligned[picked].ffill().bfill()
+            corr = candidate.corr(picked_series)
+            if pd.notna(corr) and abs(float(corr)) > 0.96:
+                too_close = True
+                break
+        if too_close:
+            continue
+        selected_cols.append(str(row.feature))
+        if len(selected_cols) >= max_features:
+            break
+
+    if not selected_cols:
+        return pd.DataFrame(index=target.index), pd.DataFrame(columns=["feature", "score", "corr_full", "corr_recent", "n_obs"])
+
+    selected = aligned[selected_cols].ffill().bfill().fillna(0.0)
+    selected_stats = stats[stats["feature"].isin(selected_cols)].copy()
+    selected_stats["selected_rank"] = range(1, len(selected_stats) + 1)
+    selected_stats = selected_stats[["selected_rank", "feature", "score", "corr_full", "corr_recent", "n_obs"]]
+    return selected, selected_stats
+
+
 def _build_exog_features(
     source_df: pd.DataFrame,
     linked_df: Optional[pd.DataFrame],
@@ -522,13 +660,13 @@ def _build_exog_features(
     self_metrics = [col for col in available_metrics(source_df) if col != target_metric]
     self_frame = _daily_metric_frame(source_df, self_metrics)
     if not self_frame.empty:
-        parts.append(self_frame.add_prefix("self_"))
+        parts.append(_lagged_feature_block(self_frame.add_prefix("self_"), [1, 2, 5]))
 
     if linked_df is not None and not linked_df.empty:
         linked_metrics = available_metrics(linked_df)
         linked_frame = _daily_metric_frame(linked_df, linked_metrics)
         if not linked_frame.empty:
-            parts.append(linked_frame.add_prefix("linked_"))
+            parts.append(_lagged_feature_block(linked_frame.add_prefix("linked_"), [1, 2, 5, 10]))
 
     if warehouse_df is not None and not warehouse_df.empty:
         warehouse_exclude = {
@@ -550,7 +688,7 @@ def _build_exog_features(
         warehouse_metrics = [col for col in available_metrics(warehouse_df) if col not in warehouse_exclude]
         warehouse_frame = _daily_metric_frame(warehouse_df, warehouse_metrics)
         if not warehouse_frame.empty:
-            parts.append(warehouse_frame.add_prefix("wh_"))
+            parts.append(_lagged_feature_block(warehouse_frame.add_prefix("wh_"), [1, 2, 5, 10, 20]))
 
     if world_state_daily is not None and not world_state_daily.empty:
         world_cols = [
@@ -570,7 +708,7 @@ def _build_exog_features(
         ]
         world_frame = _daily_metric_frame(world_state_daily, world_cols)
         if not world_frame.empty:
-            parts.append(world_frame.add_prefix("ws_"))
+            parts.append(_lagged_feature_block(world_frame.add_prefix("ws_"), [1, 5, 10, 20]))
 
     if not parts:
         return pd.DataFrame(index=target_index)
@@ -624,13 +762,48 @@ def _predict_model_one_step(
     raise ValueError(f"Unknown model: {model}")
 
 
-def _model_scores_for_weights(score_df: pd.DataFrame) -> Dict[str, float]:
+def _inverse_wape_weights(score_df: pd.DataFrame, models: Sequence[str]) -> Dict[str, float]:
+    subset = score_df[score_df["model"].isin(list(models))].copy()
     metric_map = {}
-    for row in score_df.itertuples():
-        if row.model == "10 Smart blend":
-            continue
+    for row in subset.itertuples():
         metric_map[row.model] = type("Metrics", (), {"wape": row.wape})()
     return compute_blend_weights(metric_map)
+
+
+def _smart_blend_weights(score_df: pd.DataFrame, backtest: pd.DataFrame) -> Dict[str, float]:
+    if score_df is None or score_df.empty or backtest is None or backtest.empty:
+        return {}
+
+    ranked = (
+        score_df[score_df["model"] != "10 Smart blend"]
+        .dropna(subset=["wape"])
+        .sort_values(["wape", "mae"], na_position="last")
+        .reset_index(drop=True)
+    )
+    ranked = ranked[ranked["model"].isin(backtest.columns)].reset_index(drop=True)
+    if ranked.empty:
+        return {}
+
+    actual = backtest.set_index("date")["actual"]
+    best_model = str(ranked.loc[0, "model"])
+    best_wape = float(ranked.loc[0, "wape"])
+    best_choice = {"weights": {best_model: 1.0}, "wape": best_wape}
+
+    bt_idx = backtest.set_index("date")
+    max_top_n = min(4, len(ranked))
+    for top_n in range(2, max_top_n + 1):
+        models = ranked["model"].tolist()[:top_n]
+        weights = _inverse_wape_weights(ranked, models)
+        if not weights:
+            continue
+        pred = pd.Series(0.0, index=actual.index)
+        for model, weight in weights.items():
+            pred = pred + bt_idx[model].astype(float) * float(weight)
+        trial_wape, _, _, _ = _metric_summary(actual, pred)
+        if pd.notna(trial_wape) and float(trial_wape) + 1e-12 < float(best_choice["wape"]):
+            best_choice = {"weights": weights, "wape": float(trial_wape)}
+
+    return {str(model): float(weight) for model, weight in best_choice["weights"].items()}
 
 
 @st.cache_data(show_spinner=False, max_entries=64)
@@ -646,12 +819,13 @@ def compute_model_suite(
 ) -> Dict[str, object]:
     series = _daily_series(raw_df, metric)
     if series.empty:
-        return {"future": pd.DataFrame(), "backtest": pd.DataFrame(), "scores": pd.DataFrame(), "weights": pd.DataFrame()}
+        return {"future": pd.DataFrame(), "backtest": pd.DataFrame(), "scores": pd.DataFrame(), "weights": pd.DataFrame(), "drivers": pd.DataFrame()}
 
     horizon_days = max(int(horizon_days), 1)
     future_idx = pd.date_range(series.index.max() + pd.Timedelta(days=1), periods=horizon_days, freq="D")
-    exog_full = _build_exog_features(raw_df, linked_df, warehouse_df, world_state_daily, metric, series.index)
-    exog_shifted = exog_full.shift(1).ffill().bfill() if not exog_full.empty else pd.DataFrame(index=series.index)
+    exog_candidates = _build_exog_features(raw_df, linked_df, warehouse_df, world_state_daily, metric, series.index)
+    exog_full, driver_info = _select_driver_features(series, exog_candidates, max_features=12)
+    exog_shifted = exog_full.copy() if not exog_full.empty else pd.DataFrame(index=series.index)
 
     future = pd.DataFrame(index=future_idx)
     future["01 Seasonal baseline"] = baseline_as_result(series, horizon_days, "daily").forecast.reindex(future_idx).values
@@ -663,7 +837,7 @@ def compute_model_suite(
     future["07 Hybrid calendar x trend"] = _legacy_forecast_series(raw_df, metric, future_idx, "hybrid", lookback_weeks, include_weekend).values
     future["08 Ridge internal"] = ridge_forecast(series, horizon_days, "daily").forecast.reindex(future_idx).values
 
-    hist_exog, future_exog = align_known_exog(exog_full, future_idx, lag_periods=1) if not exog_full.empty else (pd.DataFrame(), pd.DataFrame())
+    hist_exog, future_exog = align_known_exog(exog_full, future_idx, lag_periods=0) if not exog_full.empty else (pd.DataFrame(), pd.DataFrame())
     hist_exog = hist_exog.reindex(series.index).ffill().bfill() if not hist_exog.empty else hist_exog
     if hist_exog is not None and not hist_exog.empty:
         future["09 Ridge with drivers"] = ridge_forecast(series, horizon_days, "daily", exog_hist=hist_exog, exog_future=future_exog).forecast.reindex(future_idx).values
@@ -700,7 +874,7 @@ def compute_model_suite(
             score_rows.append(_backtest_row(model, actual, backtest.set_index("date")[model]))
 
     scores = pd.DataFrame(score_rows).sort_values(["wape", "mae"], na_position="last").reset_index(drop=True) if score_rows else pd.DataFrame()
-    weights = _model_scores_for_weights(scores) if not scores.empty else {}
+    weights = _smart_blend_weights(scores, backtest) if not scores.empty and not backtest.empty else {}
 
     if weights:
         future["10 Smart blend"] = 0.0
@@ -727,7 +901,7 @@ def compute_model_suite(
     ).sort_values("weight", ascending=False) if weights else pd.DataFrame(columns=["model", "weight"])
 
     future = future.reset_index().rename(columns={"index": "date"})
-    return {"future": future, "backtest": backtest, "scores": scores, "weights": weight_df}
+    return {"future": future, "backtest": backtest, "scores": scores, "weights": weight_df, "drivers": driver_info}
 
 
 def _future_dates_for_window(last_actual_date: pd.Timestamp, eval_year: int, week_start: int, week_end: int, include_weekend: bool) -> List[pd.Timestamp]:
@@ -833,6 +1007,97 @@ def _format_pct(value: float) -> str:
 
 def _format_num(value: float, digits: int = 1) -> str:
     return "n/a" if pd.isna(value) else f"{value:,.{digits}f}".replace(",", " ")
+
+
+def _quality_band(wape: float) -> str:
+    if pd.isna(wape):
+        return "Bez hodnoceni"
+    if wape <= 0.12:
+        return "Vyborne"
+    if wape <= 0.20:
+        return "Silne"
+    if wape <= 0.30:
+        return "Pouzitelne"
+    return "Opatrne"
+
+
+def _driver_feature_parts(feature: str) -> tuple[str, str, str]:
+    text = str(feature)
+    prefix = text.split("_", 1)[0] if "_" in text else "self"
+    lag_label = ""
+    base = text
+    if "_lag" in text:
+        base, lag_part = text.rsplit("_lag", 1)
+        if lag_part.isdigit():
+            lag_label = f"lag {int(lag_part)} d"
+    if "_" in base:
+        _, base = base.split("_", 1)
+    return prefix, base, lag_label
+
+
+def _driver_feature_label(feature: str) -> str:
+    _, base, lag_label = _driver_feature_parts(feature)
+    label = DRIVER_LABELS.get(base, base.replace("_", " "))
+    return f"{label} ({lag_label})" if lag_label else label
+
+
+def _driver_feature_family(feature: str) -> str:
+    prefix, _, _ = _driver_feature_parts(feature)
+    return DRIVER_FAMILY_LABELS.get(prefix, prefix)
+
+
+def _driver_table_for_display(driver_info: pd.DataFrame) -> pd.DataFrame:
+    if driver_info is None or driver_info.empty:
+        return pd.DataFrame()
+    table = driver_info.copy()
+    table["family"] = table["feature"].map(_driver_feature_family)
+    table["driver"] = table["feature"].map(_driver_feature_label)
+    table["score"] = table["score"].map(lambda value: round(float(value), 3))
+    table["corr_full"] = table["corr_full"].map(lambda value: round(float(value), 3))
+    table["corr_recent"] = table["corr_recent"].map(lambda value: round(float(value), 3))
+    return table[["selected_rank", "family", "driver", "score", "corr_full", "corr_recent", "n_obs"]]
+
+
+def _render_model_story(scores: pd.DataFrame, active_model: str, driver_info: Optional[pd.DataFrame] = None) -> None:
+    if scores is None or scores.empty:
+        st.info("Backtest zatim nema dost bodu pro spolehlive srovnani modelu.")
+        return
+
+    ranked = scores.sort_values(["wape", "mae"], na_position="last").reset_index(drop=True)
+    best = ranked.iloc[0]
+    picked = _score_lookup(scores, active_model)
+    picked_wape = float(picked["wape"]) if picked is not None else np.nan
+    best_wape = float(best["wape"]) if pd.notna(best["wape"]) else np.nan
+    gap = picked_wape - best_wape if picked is not None and pd.notna(best_wape) else np.nan
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Nejlepsi backtest", str(best["model"]))
+    c2.metric("WAPE viteze", _format_pct(best_wape))
+    c3.metric("Vybrany model", active_model)
+    c4.metric("Rozdil vs vitez", _format_pct(gap) if pd.notna(gap) else "n/a")
+
+    if picked is None:
+        st.caption("Vybrany model zatim nema dost backtest bodu.")
+    elif active_model == str(best["model"]):
+        st.success(f"Vybrany model je v tomhle rezu aktualne nejpresnejsi. Kvalita: {_quality_band(picked_wape)}.")
+    elif pd.notna(gap) and gap <= 0.02:
+        st.info(
+            f"Vybrany model je velmi blizko vitezi. WAPE je horsi jen o {_format_pct(gap)}. "
+            f"Kvalita: {_quality_band(picked_wape)}."
+        )
+    else:
+        st.warning(
+            f"Vybrany model prohrava proti vitezi o {_format_pct(gap)} WAPE. "
+            f"Pokud chces maximalni presnost, ber spis `{best['model']}`."
+        )
+
+    if driver_info is not None and not driver_info.empty:
+        driver_table = _driver_table_for_display(driver_info)
+        if not driver_table.empty:
+            st.caption(
+                "Model 09 nebere vsechny drivery naslepo. Pouziva jen promene, ktere maji dost bodu a stabilni vztah k cili."
+            )
+            st.dataframe(driver_table, use_container_width=True, hide_index=True)
 
 
 def _score_lookup(scores: pd.DataFrame, model: str) -> Optional[pd.Series]:
@@ -1022,6 +1287,7 @@ def _render_operational_tab(
             disabled=not show_forecast,
             format_func=lambda item: TREND_MODE_LABELS[item],
         )
+        st.caption(MODEL_DESCRIPTIONS.get(TREND_TO_ADVANCED_MODEL[trend_mode], ""))
     with fc2:
         lookback_weeks = int(st.slider("Trend okno (týdny)", 2, 26, 8, key=f"{prefix}_lookback", disabled=not show_forecast))
     with fc3:
@@ -1132,6 +1398,12 @@ def _render_operational_tab(
     if detail_grid.empty:
         st.info("Pro detail metriku nejsou data.")
         return
+
+    _render_model_story(
+        detail_suite.get("scores", pd.DataFrame()),
+        selected_model_name,
+        None,
+    )
 
     pivot = detail_grid.pivot_table(index="x", columns="iso_year", values=detail_metric, aggfunc="sum", fill_value=0).reset_index()
     keep_years = [year for year in years_sel if year in pivot.columns]
@@ -1245,6 +1517,7 @@ def _render_prediction_models(src: Sources, exog_bundle: ExogBundle) -> None:
         horizon = int(st.slider("Horizont (pracovní dny)", 5, 120, 30, key="pred_horizon"))
     with c4:
         manual_adj = int(st.slider("Korekce (%)", -30, 30, 0, key="pred_adj"))
+    st.caption(MODEL_DESCRIPTIONS.get(model_name, ""))
 
     lookback_weeks = int(st.slider("Trend okno pro trendové modely", 2, 26, 8, key="pred_lookback"))
     include_weekend = False
@@ -1306,6 +1579,8 @@ def _render_prediction_models(src: Sources, exog_bundle: ExogBundle) -> None:
     c7.metric("Součet 10 dní", _format_num(sum_10, 1))
     c8.metric("Průměr den", _format_num(mean_10, 1))
 
+    _render_model_story(scores, model_name, suite.get("drivers", pd.DataFrame()) if model_name in {"09 Ridge with drivers", "10 Smart blend"} else None)
+
     fig = px.line(plot_df, x="date", y="value", color="series", markers=True, title=f"{metric_labels.get(metric, metric)} - historie + predikce")
     fig.update_traces(connectgaps=False)
     st.plotly_chart(fig, use_container_width=True)
@@ -1314,6 +1589,10 @@ def _render_prediction_models(src: Sources, exog_bundle: ExogBundle) -> None:
         st.markdown("#### Váhy Smart blend")
         show_weights = weights.copy()
         show_weights["weight"] = show_weights["weight"].map(lambda value: f"{value:.1%}")
+        if len(weights) == 1:
+            st.caption("Smart blend v tomhle řezu nenašel lepší kombinaci, takže drží čistě nejpřesnější model.")
+        else:
+            st.caption("Smart blend míchá jen top modely, pokud jejich kombinace v backtestu opravdu zlepšila přesnost.")
         st.dataframe(show_weights, use_container_width=True, hide_index=True)
 
     st.markdown("#### Backtest modelů")
