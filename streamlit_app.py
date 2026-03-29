@@ -644,6 +644,10 @@ def compute_model_suite(
 
 
 def _future_dates_for_window(last_actual_date: pd.Timestamp, eval_year: int, week_start: int, week_end: int, include_weekend: bool) -> List[pd.Timestamp]:
+    return [day for day in _window_dates_for_year(eval_year, week_start, week_end, include_weekend) if day > last_actual_date]
+
+
+def _window_dates_for_year(eval_year: int, week_start: int, week_end: int, include_weekend: bool) -> List[pd.Timestamp]:
     dates: List[pd.Timestamp] = []
     for week in range(int(week_start), int(week_end) + 1):
         for weekday in range(1, 8):
@@ -653,9 +657,64 @@ def _future_dates_for_window(last_actual_date: pd.Timestamp, eval_year: int, wee
                 day = pd.Timestamp(dt.date.fromisocalendar(int(eval_year), int(week), int(weekday)))
             except ValueError:
                 continue
-            if day > last_actual_date:
-                dates.append(day)
+            dates.append(day)
     return sorted(dates)
+
+
+def _date_option_label(value: str) -> str:
+    day = pd.Timestamp(value)
+    iso = day.isocalendar()
+    return f"{day:%Y-%m-%d} | KT{int(iso.week):02d} {WEEKDAY_SHORT.get(int(iso.day), '?')}"
+
+
+def _drop_selected_dates(df: pd.DataFrame, drop_dates: Sequence[str]) -> pd.DataFrame:
+    if df.empty or not drop_dates:
+        return df.copy()
+    frame = df.copy()
+    frame["_drop_day"] = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
+    to_drop = {pd.Timestamp(value).normalize() for value in drop_dates}
+    frame = frame[~frame["_drop_day"].isin(to_drop)].copy()
+    return frame.drop(columns=["_drop_day"], errors="ignore")
+
+
+def _operational_window_forecast_df(
+    regular_raw_df: pd.DataFrame,
+    metric: str,
+    eval_year: int,
+    week_start: int,
+    week_end: int,
+    trend_mode: str,
+    lookback_weeks: int,
+    include_weekend: bool,
+    manual_adj_pct: float,
+) -> pd.DataFrame:
+    window_dates = _window_dates_for_year(eval_year, week_start, week_end, include_weekend)
+    if regular_raw_df.empty or metric not in regular_raw_df.columns or not window_dates:
+        return pd.DataFrame(columns=["date", "forecast", "iso_week", "weekday", "x"])
+
+    window_idx = pd.DatetimeIndex(window_dates)
+    forecast = pd.Series(
+        [
+            _legacy_point_forecast(
+                regular_raw_df,
+                metric=metric,
+                target_date=pd.Timestamp(day),
+                mode=trend_mode,
+                lookback_weeks=lookback_weeks,
+                include_weekend=include_weekend,
+            )
+            for day in window_idx
+        ],
+        index=window_idx,
+        dtype=float,
+    )
+    forecast = _apply_manual_adjustment(forecast, manual_adj_pct)
+
+    forecast_df = forecast.reset_index().rename(columns={"index": "date", 0: "forecast"})
+    forecast_df["iso_week"] = forecast_df["date"].dt.isocalendar().week.astype(int)
+    forecast_df["weekday"] = forecast_df["date"].dt.isocalendar().day.astype(int)
+    forecast_df["x"] = forecast_df.apply(lambda row: _xkey(row["iso_week"], row["weekday"]), axis=1)
+    return forecast_df
 
 
 def _week_day_grid(
@@ -805,6 +864,38 @@ def _render_operational_tab(
         st.info("Vyber aspoň jednu metriku.")
         return
 
+    current_year_mask = df["iso_year"].astype(int).eq(eval_year) & df["iso_week"].between(week_start, week_end, inclusive="both")
+    if not include_weekend:
+        current_year_mask = current_year_mask & df["weekday"].astype(int).between(1, 5)
+    current_year_days = (
+        pd.to_datetime(df.loc[current_year_mask, "date"], errors="coerce")
+        .dropna()
+        .dt.normalize()
+        .sort_values()
+        .drop_duplicates()
+    )
+    ignore_options = [day.strftime("%Y-%m-%d") for day in current_year_days]
+    ignore_dates: List[str] = []
+    with st.expander("Vynechat problematicke dny z aktualniho roku", expanded=False):
+        if ignore_options:
+            ignore_dates = st.multiselect(
+                "Dny k vynechani z grafu i forecastu",
+                options=ignore_options,
+                default=[],
+                key=f"{prefix}_ignore_days",
+                format_func=_date_option_label,
+            )
+            st.caption("Vybrane dny schovam z aktualniho roku a vyradim je i z vypoctu forecastu.")
+        else:
+            st.caption("V aktualnim roce v tomhle vyrezu zatim nemam zadne dny k vynechani.")
+
+    df_model = _drop_selected_dates(df, ignore_dates)
+    if df_model.empty:
+        st.warning("Po vynechani dnu nezustala pro tenhle vyrez zadna data.")
+        return
+    if ignore_dates:
+        st.caption(f"Z aktualniho roku je docasne vynechano {len(ignore_dates)} dnu.")
+
     state_key = f"{prefix}_metrics_order"
     if state_key not in st.session_state:
         st.session_state[state_key] = list(metrics_sel)
@@ -853,20 +944,21 @@ def _render_operational_tab(
     suites: Dict[str, Dict[str, object]] = {}
     forecast_frames: Dict[str, pd.DataFrame] = {}
 
-    last_actual_date = pd.to_datetime(df["date"]).max()
+    regular_model_df = _regularize_daily(df_model)
+    last_actual_date = pd.to_datetime(df_model["date"]).max()
     future_window_dates = _future_dates_for_window(last_actual_date, eval_year, week_start, week_end, include_weekend)
     max_horizon = max((future_window_dates[-1] - last_actual_date).days, 1) if future_window_dates else 1
 
     for metric in order:
         st.markdown(f"#### {metric_labels.get(metric, metric)}")
-        grid = _week_day_grid(df[df["iso_year"].isin(years_sel)], metric, week_start, week_end, include_weekend)
+        grid = _week_day_grid(df_model[df_model["iso_year"].isin(years_sel)], metric, week_start, week_end, include_weekend)
         grids[metric] = grid
         if grid.empty:
             st.info("V tomto výřezu nejsou data.")
             continue
 
         suite = compute_model_suite(
-            raw_df=df,
+            raw_df=df_model,
             linked_df=linked_daily_df,
             metric=metric,
             horizon_days=max_horizon,
@@ -876,17 +968,18 @@ def _render_operational_tab(
         suites[metric] = suite
 
         forecast_df = pd.DataFrame(columns=["date", "forecast", "iso_week", "weekday", "x"])
-        if show_forecast and future_window_dates and not suite["future"].empty and selected_model_name in suite["future"].columns:
-            future_table = suite["future"].copy()
-            future_table["date"] = pd.to_datetime(future_table["date"])
-            series = future_table.set_index("date")[selected_model_name]
-            series = _apply_manual_adjustment(series, manual_adj)
-            series = series.reindex(pd.DatetimeIndex(future_window_dates))
-            forecast_df = series.reset_index().rename(columns={"index": "date", selected_model_name: "forecast"})
-            forecast_df["iso_week"] = forecast_df["date"].dt.isocalendar().week.astype(int)
-            forecast_df["weekday"] = forecast_df["date"].dt.isocalendar().day.astype(int)
-            forecast_df["x"] = forecast_df.apply(lambda row: _xkey(row["iso_week"], row["weekday"]), axis=1)
-            forecast_df = forecast_df.dropna(subset=["forecast"])
+        if show_forecast:
+            forecast_df = _operational_window_forecast_df(
+                regular_raw_df=regular_model_df,
+                metric=metric,
+                eval_year=eval_year,
+                week_start=week_start,
+                week_end=week_end,
+                trend_mode=trend_mode,
+                lookback_weeks=lookback_weeks,
+                include_weekend=include_weekend,
+                manual_adj_pct=manual_adj,
+            ).dropna(subset=["forecast"])
         forecast_frames[metric] = forecast_df
 
         score = _score_lookup(suite["scores"], selected_model_name)
