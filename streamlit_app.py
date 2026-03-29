@@ -86,6 +86,12 @@ class StaffingBundle:
     ratio_backtests: Optional[pd.DataFrame]
 
 
+@dataclass
+class ExogBundle:
+    warehouse_daily: Optional[pd.DataFrame]
+    world_state_daily: Optional[pd.DataFrame]
+
+
 def _read_csv(path: Path) -> pd.DataFrame:
     return pd.read_csv(path, encoding="utf-8-sig")
 
@@ -229,6 +235,41 @@ def load_staffing_bundle(base_dir_str: str) -> StaffingBundle:
         driver_backtests=read_if_exists("staffing_driver_backtests.csv"),
         ratio_backtests=read_if_exists("staffing_ratio_backtest_summary.csv"),
     )
+
+
+def _load_optional_daily_csv(path: Path) -> Optional[pd.DataFrame]:
+    if not path.exists():
+        return None
+    frame = pd.read_csv(path, encoding="utf-8-sig")
+    if "date" in frame.columns:
+        frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+        frame = frame.dropna(subset=["date"])
+        return _coerce_date(frame)
+    return None
+
+
+def _load_world_state_daily(path: Path) -> Optional[pd.DataFrame]:
+    if not path.exists():
+        return None
+    frame = pd.read_csv(path, encoding="utf-8-sig")
+    date_col = "week_start" if "week_start" in frame.columns else ("index" if "index" in frame.columns else frame.columns[0])
+    frame = frame.rename(columns={date_col: "date"})
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    frame = frame.dropna(subset=["date"]).sort_values("date")
+    value_cols = [col for col in frame.columns if col != "date" and pd.api.types.is_numeric_dtype(frame[col])]
+    if not value_cols:
+        return None
+    daily_idx = pd.date_range(frame["date"].min(), frame["date"].max() + pd.Timedelta(days=6), freq="D")
+    out = frame.set_index("date")[value_cols].reindex(daily_idx).ffill().bfill().reset_index().rename(columns={"index": "date"})
+    return _coerce_date(out)
+
+
+@st.cache_data(show_spinner=False)
+def load_exog_bundle(base_dir_str: str) -> ExogBundle:
+    base_dir = Path(base_dir_str)
+    warehouse_daily = _load_optional_daily_csv(base_dir / "warehouse_state_exports" / "warehouse_state_daily.csv")
+    world_state_daily = _load_world_state_daily(base_dir / "world_state_feature_weekly.csv")
+    return ExogBundle(warehouse_daily=warehouse_daily, world_state_daily=world_state_daily)
 
 
 def _metric_summary(actual: pd.Series, pred: pd.Series) -> tuple[float, float, float, int]:
@@ -471,6 +512,8 @@ def _legacy_forecast_series(
 def _build_exog_features(
     source_df: pd.DataFrame,
     linked_df: Optional[pd.DataFrame],
+    warehouse_df: Optional[pd.DataFrame],
+    world_state_daily: Optional[pd.DataFrame],
     target_metric: str,
     target_index: pd.DatetimeIndex,
 ) -> pd.DataFrame:
@@ -486,6 +529,48 @@ def _build_exog_features(
         linked_frame = _daily_metric_frame(linked_df, linked_metrics)
         if not linked_frame.empty:
             parts.append(linked_frame.add_prefix("linked_"))
+
+    if warehouse_df is not None and not warehouse_df.empty:
+        warehouse_exclude = {
+            target_metric,
+            "outbound_qty",
+            "outbound_load_units",
+            "outbound_picks",
+            "outbound_full_picks",
+            "outbound_partial_picks",
+            "packing_lines",
+            "packing_orders",
+            "packing_volume_dm3",
+            "packing_net_kg",
+            "inbound_articles",
+            "inbound_avizo",
+            "wrapping_qty",
+            "putaway_qty",
+        }
+        warehouse_metrics = [col for col in available_metrics(warehouse_df) if col not in warehouse_exclude]
+        warehouse_frame = _daily_metric_frame(warehouse_df, warehouse_metrics)
+        if not warehouse_frame.empty:
+            parts.append(warehouse_frame.add_prefix("wh_"))
+
+    if world_state_daily is not None and not world_state_daily.empty:
+        world_cols = [
+            col
+            for col in [
+                "esab_close",
+                "esab_close_4w_pct",
+                "energy_stress_index",
+                "europe_demand_index",
+                "container_stress_index",
+                "geo_event_index",
+                "export_risk_index",
+                "local_operability_index",
+                "overall_world_risk_index",
+            ]
+            if col in world_state_daily.columns
+        ]
+        world_frame = _daily_metric_frame(world_state_daily, world_cols)
+        if not world_frame.empty:
+            parts.append(world_frame.add_prefix("ws_"))
 
     if not parts:
         return pd.DataFrame(index=target_index)
@@ -552,6 +637,8 @@ def _model_scores_for_weights(score_df: pd.DataFrame) -> Dict[str, float]:
 def compute_model_suite(
     raw_df: pd.DataFrame,
     linked_df: Optional[pd.DataFrame],
+    warehouse_df: Optional[pd.DataFrame],
+    world_state_daily: Optional[pd.DataFrame],
     metric: str,
     horizon_days: int,
     lookback_weeks: int,
@@ -563,7 +650,7 @@ def compute_model_suite(
 
     horizon_days = max(int(horizon_days), 1)
     future_idx = pd.date_range(series.index.max() + pd.Timedelta(days=1), periods=horizon_days, freq="D")
-    exog_full = _build_exog_features(raw_df, linked_df, metric, series.index)
+    exog_full = _build_exog_features(raw_df, linked_df, warehouse_df, world_state_daily, metric, series.index)
     exog_shifted = exog_full.shift(1).ffill().bfill() if not exog_full.empty else pd.DataFrame(index=series.index)
 
     future = pd.DataFrame(index=future_idx)
@@ -791,6 +878,7 @@ def _render_operational_tab(
     daily_df: pd.DataFrame,
     shift_df: Optional[pd.DataFrame],
     linked_daily_df: Optional[pd.DataFrame],
+    exog_bundle: ExogBundle,
     metric_labels: Dict[str, str],
     default_metrics: List[str],
     shift_format,
@@ -939,6 +1027,14 @@ def _render_operational_tab(
     with fc3:
         manual_adj = int(st.slider("Korekce predikce (%)", -30, 30, 0, key=f"{prefix}_adj", disabled=not show_forecast))
 
+    driver_notes = []
+    if exog_bundle.warehouse_daily is not None and not exog_bundle.warehouse_daily.empty:
+        driver_notes.append("Příjmy / handling / net flow")
+    if exog_bundle.world_state_daily is not None and not exog_bundle.world_state_daily.empty:
+        driver_notes.append("ESAB / energie / container stress")
+    if driver_notes:
+        st.caption("Rozšířené drivery pro model 09: " + " + ".join(driver_notes))
+
     selected_model_name = TREND_TO_ADVANCED_MODEL[trend_mode]
     grids: Dict[str, pd.DataFrame] = {}
     suites: Dict[str, Dict[str, object]] = {}
@@ -960,6 +1056,8 @@ def _render_operational_tab(
         suite = compute_model_suite(
             raw_df=df_model,
             linked_df=linked_daily_df,
+            warehouse_df=exog_bundle.warehouse_daily,
+            world_state_daily=exog_bundle.world_state_daily,
             metric=metric,
             horizon_days=max_horizon,
             lookback_weeks=lookback_weeks,
@@ -1052,7 +1150,7 @@ def _render_operational_tab(
         _render_backtest_summary(detail_suite.get("scores", pd.DataFrame()), selected_model_name, detail_suite.get("backtest", pd.DataFrame()))
 
 
-def tab_baleni(src: Sources) -> None:
+def tab_baleni(src: Sources, exog_bundle: ExogBundle) -> None:
     if src.packed_daily is None or src.packed_daily.empty:
         st.error("Chybí packed_daily_kpis.csv")
         return
@@ -1070,6 +1168,7 @@ def tab_baleni(src: Sources) -> None:
         daily_df=src.packed_daily,
         shift_df=src.packed_shift,
         linked_daily_df=src.loaded_daily,
+        exog_bundle=exog_bundle,
         metric_labels=metric_labels,
         default_metrics=["binhits", "gross_tons", "pallets_count", "cartons_count"],
         shift_format=lambda item: "Celkem" if item == "all" else ("Denní" if item == "day" else ("Noční" if item == "night" else item)),
@@ -1078,7 +1177,7 @@ def tab_baleni(src: Sources) -> None:
     )
 
 
-def tab_nakladky(src: Sources) -> None:
+def tab_nakladky(src: Sources, exog_bundle: ExogBundle) -> None:
     if src.loaded_daily is None or src.loaded_daily.empty:
         st.error("Chybí loaded_daily_kpis.csv")
         return
@@ -1097,6 +1196,7 @@ def tab_nakladky(src: Sources) -> None:
         daily_df=src.loaded_daily,
         shift_df=src.loaded_shift,
         linked_daily_df=src.packed_daily,
+        exog_bundle=exog_bundle,
         metric_labels=metric_labels,
         default_metrics=["trips_total", "gross_tons", "containers_count"],
         shift_format=lambda item: "Celkem" if item == "all" else ("Ranní" if item == "morning" else ("Odpolední" if item == "afternoon" else item)),
@@ -1105,7 +1205,7 @@ def tab_nakladky(src: Sources) -> None:
     )
 
 
-def _render_prediction_models(src: Sources) -> None:
+def _render_prediction_models(src: Sources, exog_bundle: ExogBundle) -> None:
     source_options = {
         "Balení (Kompletace)": ("packed", src.packed_daily, src.loaded_daily),
         "Nakládky (Výdeje)": ("loaded", src.loaded_daily, src.packed_daily),
@@ -1149,11 +1249,27 @@ def _render_prediction_models(src: Sources) -> None:
     lookback_weeks = int(st.slider("Trend okno pro trendové modely", 2, 26, 8, key="pred_lookback"))
     include_weekend = False
     st.caption("Na kartě Predikce se zobrazují jen pracovní dny.")
+    driver_notes = []
+    if exog_bundle.warehouse_daily is not None and not exog_bundle.warehouse_daily.empty:
+        driver_notes.append("Příjmy / handling / net flow")
+    if exog_bundle.world_state_daily is not None and not exog_bundle.world_state_daily.empty:
+        driver_notes.append("ESAB / energie / container stress")
+    if driver_notes:
+        st.caption("Model 09 používá: " + " + ".join(driver_notes))
 
     effective_horizon = int(max(horizon + 12, round(horizon * 1.6)))
 
     with st.spinner("Počítám forecast a backtest modelů..."):
-        suite = compute_model_suite(df, linked_df, metric, effective_horizon, lookback_weeks, include_weekend)
+        suite = compute_model_suite(
+            df,
+            linked_df,
+            exog_bundle.warehouse_daily,
+            exog_bundle.world_state_daily,
+            metric,
+            effective_horizon,
+            lookback_weeks,
+            include_weekend,
+        )
     if suite["future"].empty:
         st.info("Na predikci zatím není dost dat.")
         return
@@ -1349,12 +1465,12 @@ def _render_staffing_tab(bundle: StaffingBundle) -> None:
         st.caption("Některé nové staffing sloupce v exportu chybí: " + ", ".join(missing_cols[:6]) + ("..." if len(missing_cols) > 6 else ""))
 
 
-def tab_predikce(src: Sources, staffing_bundle: StaffingBundle) -> None:
+def tab_predikce(src: Sources, staffing_bundle: StaffingBundle, exog_bundle: ExogBundle) -> None:
     st.subheader("Predikce dopředu 📈")
     sub1, sub2 = st.tabs(["Modely výkonu", "Staffing"])
 
     with sub1:
-        _render_prediction_models(src)
+        _render_prediction_models(src, exog_bundle)
 
     with sub2:
         _render_staffing_tab(staffing_bundle)
@@ -1367,22 +1483,30 @@ def main() -> None:
         st.header("Data")
         base = st.text_input("Složka s KPI CSV", value=".")
         base_dir = Path(base).resolve()
-        st.caption("Očekává: packed/loaded KPI CSV a volitelně staffing_forecast_exports")
+        st.caption("Očekává: packed/loaded KPI CSV a volitelně staffing_forecast_exports + warehouse_state_exports + world_state_feature_weekly.csv")
 
     src, missing = load_sources(str(base_dir))
     staffing_bundle = load_staffing_bundle(str(base_dir))
+    exog_bundle = load_exog_bundle(str(base_dir))
 
     if missing:
         st.warning("Chybí některé KPI soubory: " + ", ".join(missing))
+    driver_notes = []
+    if exog_bundle.warehouse_daily is not None and not exog_bundle.warehouse_daily.empty:
+        driver_notes.append("Příjmy / handling / net flow")
+    if exog_bundle.world_state_daily is not None and not exog_bundle.world_state_daily.empty:
+        driver_notes.append("ESAB / energie / container stress")
+    if driver_notes:
+        st.caption("Driver vrstva aktivní: " + " + ".join(driver_notes))
 
     tab1, tab2, tab3 = st.tabs(["Balení", "Nakládky", "Predikce dopředu"])
 
     with tab1:
-        tab_baleni(src)
+        tab_baleni(src, exog_bundle)
     with tab2:
-        tab_nakladky(src)
+        tab_nakladky(src, exog_bundle)
     with tab3:
-        tab_predikce(src, staffing_bundle)
+        tab_predikce(src, staffing_bundle, exog_bundle)
 
 
 if __name__ == "__main__":
