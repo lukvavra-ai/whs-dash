@@ -1,25 +1,31 @@
-Upload the CONTENTS of this folder to the repository root.
+WHS DASH upload balicek
+Vytvoreno: 2026-03-30
 
-Overwrite these root files:
-- streamlit_app.py
-- forecasting.py
-- requirements.txt
-- packed_daily_kpis.csv
-- packed_shift_kpis.csv
-- packed_typobalu_audit.csv
-- loaded_daily_kpis.csv
-- loaded_shift_kpis.csv
+Co obsahuje:
+- aktualni `streamlit_app.py`
+- forecast runtime soubory a data
+- `staffing_forecast_exports`
+- `warehouse_state_exports`
+- `analysis_exports` se shrnutim driveru a validace
 
-Also upload this folder to the repo root:
-- staffing_forecast_exports/
+Jak nahrat:
+1. Otevri root repa `whs-dash`.
+2. Nahraj OBSAH teto slozky do rootu repa.
+3. Nenahravej slozku `UPLOAD_WHS_DASH_2026-03-30` jako podslozku.
+4. Pokud uz v repu existuji stejne soubory nebo slozky, prepis je.
 
-What is included:
-- operational tabs keep the same UX, but forecast overlay now uses the improved model layer
-- Trend mode on BalenI/Nakladky maps to better forecast engines
-- Predikce tab now contains advanced models and Staffing
-- staffing_forecast_exports contains forecasted binhits, required people, kmen/agentura split, and backtests
+Nejdulzitejsi runtime soubory:
+- `streamlit_app.py`
+- `forecasting.py`
+- `packed_daily_kpis.csv`
+- `packed_shift_kpis.csv`
+- `loaded_daily_kpis.csv`
+- `loaded_shift_kpis.csv`
+- `world_state_feature_weekly.csv`
+- `staffing_forecast_exports`
+- `warehouse_state_exports`
 
-Quick check after upload:
-- Streamlit app file name in repo root must be exactly: streamlit_app.py
-- forecasting.py must be in the same repo root as streamlit_app.py
-- staffing_forecast_exports must stay as a folder in repo root
+Kontrola po nasazeni:
+- karta `Predikce dopredu` ma vysvetleni modelu a metrik
+- karta `Staffing` ma vysvetleni kapacitni logiky
+- appka ukazuje nove public drivere a poctive backtest vysledky

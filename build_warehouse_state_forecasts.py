@@ -97,7 +97,11 @@ def _parse_day(series: pd.Series) -> pd.Series:
 
 
 def _read_yearly_folder(folder: Path) -> list[tuple[str, pd.DataFrame]]:
-    files = sorted(p for p in folder.glob("*.csv") if p.is_file())
+    files = sorted(
+        p
+        for p in folder.glob("*.csv")
+        if p.is_file() and re.fullmatch(r"\d{4}", p.stem)
+    )
     out: list[tuple[str, pd.DataFrame]] = []
     for path in files:
         out.append((path.name, _load_csv(path)))

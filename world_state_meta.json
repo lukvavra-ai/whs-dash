@@ -1,0 +1,52 @@
+{
+  "updated_at": "2026-03-30T14:49:06.043611+00:00",
+  "factor_rows": {
+    "brent": 2516,
+    "vix": 2515,
+    "copper": 2515,
+    "eu_gas": 2121,
+    "esab_close": 1004,
+    "gscpi": 338,
+    "rwi": 229,
+    "diesel": 1059,
+    "de_prod_c24_c25": 421,
+    "de_prod_c25": 421,
+    "de_prod_c28": 421,
+    "de_prod_c29": 421,
+    "ea_prod_mig_ing": 421,
+    "ea_prod_mig_cag": 421,
+    "ea_prod_c25": 373,
+    "de_ppi_c24_c25": 313,
+    "ea_ppi_mig_ing": 313
+  },
+  "news_rows": {
+    "shipping_risk_news": 0,
+    "energy_conflict_news": 0,
+    "europe_industry_news": 0
+  },
+  "factor_live_available": {
+    "brent": true,
+    "vix": true,
+    "copper": true,
+    "eu_gas": true,
+    "esab_close": true,
+    "gscpi": true,
+    "rwi": true,
+    "diesel": true,
+    "de_prod_c24_c25": true,
+    "de_prod_c25": true,
+    "de_prod_c28": true,
+    "de_prod_c29": true,
+    "ea_prod_mig_ing": true,
+    "ea_prod_mig_cag": true,
+    "ea_prod_c25": true,
+    "de_ppi_c24_c25": true,
+    "ea_ppi_mig_ing": true
+  },
+  "news_live_available": {
+    "shipping_risk_news": false,
+    "energy_conflict_news": false,
+    "europe_industry_news": false
+  },
+  "used_cached_fallback": true
+}

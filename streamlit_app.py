@@ -60,11 +60,150 @@ MODEL_DESCRIPTIONS = {
     "10 Smart blend": "Automaticky vybere nejlepsi kombinaci top modelu. Kdyz blend nepomaha, drzi se nejlepsiho modelu.",
 }
 
+METRIC_EXPLANATIONS = {
+    "binhits": "Binhits jsou nejlepší rychlý obraz denní zátěže balení. Čím výš jsou, tím víc práce proteklo skladem po binových operacích.",
+    "gross_tons": "GW ukazuje hmotnostní tlak. Je užitečné ho číst spolu s binhits, protože stejné binhits mohou mít jinou fyzickou náročnost.",
+    "cartons_count": "Kartony ukazují jemnější balicí mix. Když rostou rychleji než palety, práce bývá detailnější a méně lineární.",
+    "pallets_count": "Palety jsou hrubý obraz objemu balení. Dobře se hodí pro kapacitní pohled a porovnání s GW.",
+    "vydejky_unique": "Výdejky ukazují počet unikátních dokladů. Často dobře vysvětlují provozní fragmentaci práce.",
+    "trips_total": "Trips celkem jsou nejlepší základní KPI nakládek. Popisují, kolik reálných odjezdů sklad odbavil.",
+    "trips_export": "Trips export zachycují exportní tlak. Jsou důležité hlavně pro vazbu na kontejnery a citlivost na externí svět.",
+    "trips_europe": "Trips Evropa ukazují běžný evropský tok. Často mají jiný rytmus než export a jinou sezonnost.",
+    "containers_count": "Kontejnery jsou nejcitlivější KPI na exportní mix, příjmy consumables a veřejné shipping indikátory.",
+    "orders_nunique": "Objednávky jsou silný interní driver. Dobře fungují jako předstihový signál pro trips i část balení.",
+}
+
+STAFFING_METRIC_EXPLANATIONS = {
+    "Binhits celkem": "Celkový forecast binhitů je základ staffing převodu. Z něj se dopočítávají hodiny i lidé.",
+    "Binhits den": "Denní binhits jsou část práce, která připadá na denní bucket. Pomáhají rozlišit agenturní denní potřebu.",
+    "Binhits noc": "Noční binhits ukazují tlak na noční část provozu. Jsou důležité hlavně pro agenturní noc.",
+    "Potřebný headcount": "Celkový potřebný headcount je orientační počet lidí, který by měl pokrýt forecastovanou zátěž při aktuální produktivitě.",
+    "Kmen ráno": "Kmen ráno je pevný ranní bucket. Model ho nepřehazuje volně, ale drží se reality posledních srovnatelných dnů.",
+    "Kmen odpo": "Kmen odpo je pevný odpolední bucket. Slouží jako stabilní kostra směny, ne jako libovolná flexibilita.",
+    "Agentura den": "Agentura den dopočítává zbylou denní potřebu po odečtení realistické kapacity kmene.",
+    "Agentura noc": "Agentura noc dopočítává zbylou noční potřebu po odečtení toho, co reálně pokryje kmen a běžný noční mix.",
+    "Denní směna": "Denní směna shrnuje všechny pracovníky potřebné pro denní část provozu bez ohledu na formu zaměstnání.",
+    "Noční směna": "Noční směna shrnuje všechny pracovníky potřebné pro noční část provozu bez ohledu na formu zaměstnání.",
+    "Placené hodiny": "Placené hodiny jsou mezikrok mezi forecastem práce a počtem lidí. Převádí výkon na potřebný čas.",
+    "Produktivní workers": "Produktivní workers jsou užší odhad lidí, kteří skutečně pokrývají produktivní část práce.",
+}
+
+PUBLIC_DRIVER_EXPLANATIONS = {
+    "Brent / diesel / TTF gas": "Energetické a transportní náklady. Neřídí sklad samy, ale pomáhají rozpoznat režim tlaku a operability.",
+    "RWI / GSCPI / container stress": "Shipping a supply-chain vrstva. Nejdůležitější hlavně pro kontejnery a exportní chování.",
+    "Eurostat industry / PPI": "Průmyslová poptávka a vstupní ceny. Fungují spíš jako střednědobý režimový signál než denní driver.",
+    "ESAB / copper": "Firemní a průmyslová proxy vrstva. Sama o sobě forecast nespasí, ale může pomoct u změny trendového režimu.",
+}
+
+HOW_TO_READ_METRICS = {
+    "WAPE": "WAPE je průměrná relativní chyba. Čím níž, tím líp. Prakticky ukazuje, jak daleko forecast bývá od reality v poměru k objemu.",
+    "Bias": "Bias říká, jestli model systematicky přestřeluje nebo podstřeluje. Kladný bias znamená spíš nadhodnocení, záporný podhodnocení.",
+    "MAE": "MAE je průměrná absolutní chyba v jednotkách KPI. Dobře se čte provozně, protože ukazuje typický rozdíl v kusech, trips nebo lidech.",
+}
+
 DRIVER_FAMILY_LABELS = {
     "self": "Stejny proces",
     "linked": "Navazany proces",
     "wh": "Sklad a prijmy",
     "ws": "Globalni signal",
+}
+
+TARGET_DRIVER_PROFILES = {
+    "binhits": {
+        "max_features": 9,
+        "core": {
+            "self": {"gross_tons", "cartons_count", "pallets_count", "vydejky_unique"},
+            "linked": {"orders_nunique", "trips_total", "trips_europe", "trips_export", "containers_count", "gross_tons"},
+            "wh": {
+                "inbound_gross_kg",
+                "inbound_lines",
+                "inbound_docs",
+                "inbound_consumables_gross_kg",
+                "inbound_unknown_gross_kg",
+                "outbound_orders",
+                "outbound_docs",
+                "outbound_gross_kg",
+                "net_flow_gross_kg",
+                "wrapping_qty",
+                "putaway_qty",
+            },
+            "ws": {
+                "industry_demand_index",
+                "europe_demand_index",
+                "de_prod_c25_13w_pct",
+                "de_prod_c28_13w_pct",
+                "de_prod_c29_13w_pct",
+                "eu_gas_13w_pct",
+                "cz_diesel_price_4w_pct",
+                "welding_input_price_index",
+                "energy_stress_index",
+            },
+        },
+        "lags": {"self": {1, 2, 5}, "linked": {1, 2, 5, 10}, "wh": {1, 2, 5, 10}, "ws": {5, 10, 20}},
+        "family_cap": {"self": 3, "linked": 2, "wh": 3, "ws": 1},
+    },
+    "trips_total": {
+        "max_features": 9,
+        "core": {
+            "self": {"orders_nunique", "gross_tons", "trips_export", "trips_europe", "containers_count"},
+            "linked": {"binhits", "cartons_count", "pallets_count", "vydejky_unique", "gross_tons"},
+            "wh": {
+                "outbound_docs",
+                "outbound_orders",
+                "outbound_gross_kg",
+                "outbound_cbm",
+                "outbound_load_units",
+                "inbound_consumables_gross_kg",
+                "inbound_gross_kg",
+                "inbound_lines",
+                "net_flow_gross_kg",
+            },
+            "ws": {
+                "industry_demand_index",
+                "europe_demand_index",
+                "de_prod_c25",
+                "de_prod_c25_13w_pct",
+                "de_prod_c24_c25",
+                "copper",
+                "copper_13w_pct",
+                "export_risk_index",
+            },
+        },
+        "lags": {"self": {1, 2, 5}, "linked": {1, 2, 5}, "wh": {1, 2, 5, 10}, "ws": {5, 10, 20}},
+        "family_cap": {"self": 3, "linked": 2, "wh": 3, "ws": 1},
+    },
+    "containers_count": {
+        "max_features": 10,
+        "core": {
+            "self": {"trips_export", "trips_europe", "trips_total", "orders_nunique", "gross_tons"},
+            "linked": {"binhits", "cartons_count", "pallets_count", "vydejky_unique", "gross_tons"},
+            "wh": {
+                "inbound_consumables_gross_kg",
+                "inbound_docs",
+                "inbound_lines",
+                "outbound_gross_kg",
+                "outbound_cbm",
+                "outbound_orders",
+                "outbound_docs",
+                "net_flow_gross_kg",
+                "inbound_equipment_gross_kg",
+            },
+            "ws": {
+                "export_risk_index",
+                "container_market_index",
+                "container_stress_index",
+                "rwi_north_trend",
+                "rwi_total_trend",
+                "gscpi_pub_safe_4w_delta",
+                "de_prod_c25_13w_pct",
+                "industry_demand_index",
+                "copper_13w_pct",
+                "cz_diesel_price_4w_pct",
+            },
+        },
+        "lags": {"self": {1, 2, 5}, "linked": {1, 2, 5, 10}, "wh": {1, 2, 5, 10, 20}, "ws": {5, 10, 20}},
+        "family_cap": {"self": 2, "linked": 2, "wh": 3, "ws": 3},
+    },
 }
 
 DRIVER_LABELS = {
@@ -98,7 +237,48 @@ DRIVER_LABELS = {
     "inbound_unknown_gross_kg": "Prijmy unknown kg",
     "esab_close": "Akcie ESAB",
     "esab_close_4w_pct": "ESAB 4w zmena",
+    "brent": "Brent",
+    "brent_4w_pct": "Brent 4w zmena",
+    "brent_13w_pct": "Brent 13w zmena",
+    "vix": "VIX",
+    "vix_4w_pct": "VIX 4w zmena",
+    "vix_13w_pct": "VIX 13w zmena",
+    "copper": "Copper",
+    "copper_4w_pct": "Copper 4w zmena",
+    "copper_13w_pct": "Copper 13w zmena",
+    "eu_gas": "TTF plyn",
+    "eu_gas_4w_pct": "TTF plyn 4w zmena",
+    "eu_gas_13w_pct": "TTF plyn 13w zmena",
+    "gscpi": "GSCPI",
+    "gscpi_4w_delta": "GSCPI 4w delta",
+    "gscpi_pub_safe": "GSCPI publ-safe",
+    "gscpi_pub_safe_4w_delta": "GSCPI publ-safe 4w delta",
+    "rwi_total_trend": "RWI throughput total",
+    "rwi_total_trend_13w_pct": "RWI total 13w zmena",
+    "rwi_north_trend": "RWI North Range",
+    "rwi_north_trend_13w_pct": "RWI North Range 13w zmena",
+    "eu_diesel_price": "EU diesel",
+    "eu_diesel_price_4w_pct": "EU diesel 4w zmena",
+    "eur_diesel_price": "Euro area diesel",
+    "cz_diesel_price": "CZ diesel",
+    "cz_diesel_price_4w_pct": "CZ diesel 4w zmena",
+    "de_diesel_price": "DE diesel",
+    "de_prod_c24_c25": "DE vyroba metals",
+    "de_prod_c25": "DE vyroba fabricated metals",
+    "de_prod_c28": "DE vyroba machinery",
+    "de_prod_c29": "DE vyroba automotive",
+    "ea_prod_mig_ing": "EA vyroba intermediate goods",
+    "ea_prod_mig_cag": "EA vyroba capital goods",
+    "ea_prod_c25": "EA vyroba fabricated metals",
+    "de_ppi_c24_c25": "DE PPI metals",
+    "ea_ppi_mig_ing": "EA PPI intermediate goods",
+    "shipping_risk_news_7d_pct": "Shipping risk news 7d zmena",
+    "energy_conflict_news_7d_pct": "Energy conflict news 7d zmena",
+    "europe_industry_news_7d_pct": "Europe industry news 7d zmena",
+    "industry_demand_index": "Industry demand index",
+    "welding_input_price_index": "Welding input price index",
     "energy_stress_index": "Energy stress",
+    "container_market_index": "Container market",
     "europe_demand_index": "Europe demand",
     "container_stress_index": "Container stress",
     "geo_event_index": "Geo event risk",
@@ -108,6 +288,7 @@ DRIVER_LABELS = {
 }
 
 FAST_BACKTEST_POINTS = 14
+DRIVER_TUNING_POINTS = 6
 
 TREND_TO_ADVANCED_MODEL = {
     "static_ytd": "04 Static YTD",
@@ -573,14 +754,59 @@ def _lagged_feature_block(frame: pd.DataFrame, lags: Sequence[int]) -> pd.DataFr
     if frame is None or frame.empty:
         return pd.DataFrame()
     base = frame.astype(float).sort_index()
-    out = pd.DataFrame(index=base.index)
-    for col in base.columns:
-        for lag in lags:
-            out[f"{col}_lag{int(lag)}"] = base[col].shift(int(lag))
-    return out
+    blocks = {
+        f"{col}_lag{int(lag)}": base[col].shift(int(lag))
+        for col in base.columns
+        for lag in lags
+    }
+    return pd.DataFrame(blocks, index=base.index)
 
 
-def _select_driver_features(target_series: pd.Series, exog: pd.DataFrame, max_features: int = 12) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _driver_feature_meta(feature: str) -> tuple[str, str, Optional[int]]:
+    prefix, base, _ = _driver_feature_parts(feature)
+    lag_num: Optional[int] = None
+    text = str(feature)
+    if "_lag" in text:
+        _, lag_part = text.rsplit("_lag", 1)
+        if lag_part.isdigit():
+            lag_num = int(lag_part)
+    return prefix, base, lag_num
+
+
+def _target_driver_profile(metric: str) -> dict:
+    return TARGET_DRIVER_PROFILES.get(metric, {})
+
+
+def _feature_allowed_for_target(feature: str, metric: str) -> bool:
+    profile = _target_driver_profile(metric)
+    if not profile:
+        return True
+    prefix, base, lag_num = _driver_feature_meta(feature)
+    allowed_core = profile.get("core", {}).get(prefix)
+    if allowed_core and base not in allowed_core:
+        return False
+    allowed_lags = profile.get("lags", {}).get(prefix)
+    if allowed_lags and lag_num is not None and lag_num not in allowed_lags:
+        return False
+    return True
+
+
+def _feature_target_bonus(feature: str, metric: str) -> float:
+    profile = _target_driver_profile(metric)
+    if not profile:
+        return 0.0
+    prefix, base, lag_num = _driver_feature_meta(feature)
+    bonus = 0.0
+    if base in profile.get("core", {}).get(prefix, set()):
+        bonus += 0.05
+    if lag_num in profile.get("lags", {}).get(prefix, set()):
+        bonus += 0.03
+    if prefix == "ws" and lag_num is not None and lag_num >= 10:
+        bonus += 0.01
+    return bonus
+
+
+def _select_driver_features(target_metric: str, target_series: pd.Series, exog: pd.DataFrame, max_features: int = 12) -> tuple[pd.DataFrame, pd.DataFrame]:
     if exog is None or exog.empty:
         return pd.DataFrame(index=target_series.index), pd.DataFrame(columns=["feature", "score", "corr_full", "corr_recent", "n_obs"])
 
@@ -588,8 +814,12 @@ def _select_driver_features(target_series: pd.Series, exog: pd.DataFrame, max_fe
     aligned = exog.reindex(target.index).replace([np.inf, -np.inf], np.nan)
     stats_rows: List[Dict[str, float]] = []
     recent_idx = target.index[-min(180, len(target)) :]
+    profile = _target_driver_profile(target_metric)
+    max_features = int(profile.get("max_features", max_features))
 
     for col in aligned.columns:
+        if not _feature_allowed_for_target(col, target_metric):
+            continue
         x = pd.to_numeric(aligned[col], errors="coerce")
         mask = x.notna() & target.notna()
         if int(mask.sum()) < 90:
@@ -604,7 +834,7 @@ def _select_driver_features(target_series: pd.Series, exog: pd.DataFrame, max_fe
             corr_recent = float(recent_x[recent_mask].corr(recent_y[recent_mask]))
         else:
             corr_recent = corr_full
-        score = 0.65 * abs(corr_full) + 0.35 * abs(corr_recent)
+        score = 0.45 * abs(corr_full) + 0.55 * abs(corr_recent) + _feature_target_bonus(col, target_metric)
         if pd.isna(score) or score < 0.05:
             continue
         stats_rows.append(
@@ -622,7 +852,12 @@ def _select_driver_features(target_series: pd.Series, exog: pd.DataFrame, max_fe
 
     stats = pd.DataFrame(stats_rows).sort_values(["score", "n_obs"], ascending=[False, False]).reset_index(drop=True)
     selected_cols: List[str] = []
+    family_counts: Dict[str, int] = {}
     for row in stats.itertuples():
+        prefix, _, _ = _driver_feature_meta(str(row.feature))
+        family_cap = profile.get("family_cap", {}).get(prefix)
+        if family_cap is not None and family_counts.get(prefix, 0) >= int(family_cap):
+            continue
         candidate = aligned[row.feature].ffill().bfill()
         too_close = False
         for picked in selected_cols:
@@ -634,6 +869,7 @@ def _select_driver_features(target_series: pd.Series, exog: pd.DataFrame, max_fe
         if too_close:
             continue
         selected_cols.append(str(row.feature))
+        family_counts[prefix] = family_counts.get(prefix, 0) + 1
         if len(selected_cols) >= max_features:
             break
 
@@ -691,21 +927,7 @@ def _build_exog_features(
             parts.append(_lagged_feature_block(warehouse_frame.add_prefix("wh_"), [1, 2, 5, 10, 20]))
 
     if world_state_daily is not None and not world_state_daily.empty:
-        world_cols = [
-            col
-            for col in [
-                "esab_close",
-                "esab_close_4w_pct",
-                "energy_stress_index",
-                "europe_demand_index",
-                "container_stress_index",
-                "geo_event_index",
-                "export_risk_index",
-                "local_operability_index",
-                "overall_world_risk_index",
-            ]
-            if col in world_state_daily.columns
-        ]
+        world_cols = available_metrics(world_state_daily)
         world_frame = _daily_metric_frame(world_state_daily, world_cols)
         if not world_frame.empty:
             parts.append(_lagged_feature_block(world_frame.add_prefix("ws_"), [1, 5, 10, 20]))
@@ -728,6 +950,7 @@ def _predict_model_one_step(
     target_date: pd.Timestamp,
     lookback_weeks: int,
     include_weekend: bool,
+    driver_alpha: float = 12.0,
 ) -> float:
     train_series = series[series.index < target_date]
     if train_series.empty:
@@ -757,7 +980,7 @@ def _predict_model_one_step(
             return max(0.0, float(forecast.iloc[0]))
         hist = exog_shifted.reindex(train_series.index).ffill().bfill()
         fut = exog_shifted.reindex(pd.DatetimeIndex([target_date])).ffill().bfill()
-        forecast = ridge_forecast(train_series, 1, "daily", exog_hist=hist, exog_future=fut).forecast
+        forecast = ridge_forecast(train_series, 1, "daily", exog_hist=hist, exog_future=fut, alpha=float(driver_alpha)).forecast
         return max(0.0, float(forecast.iloc[0]))
     raise ValueError(f"Unknown model: {model}")
 
@@ -806,6 +1029,78 @@ def _smart_blend_weights(score_df: pd.DataFrame, backtest: pd.DataFrame) -> Dict
     return {str(model): float(weight) for model, weight in best_choice["weights"].items()}
 
 
+def _driver_feature_limit_grid(metric: str, default_max_features: int = 12) -> List[int]:
+    profile = _target_driver_profile(metric)
+    top = int(profile.get("max_features", default_max_features))
+    candidates = sorted({min(5, top), top})
+    return [value for value in candidates if value > 0]
+
+
+def _driver_alpha_grid(metric: str) -> List[float]:
+    if metric == "containers_count":
+        return [24.0, 48.0, 96.0]
+    if metric == "trips_total":
+        return [16.0, 32.0, 64.0]
+    return [8.0, 16.0, 32.0]
+
+
+def _tune_driver_setup(
+    metric: str,
+    series: pd.Series,
+    exog_candidates: pd.DataFrame,
+    regular_raw: pd.DataFrame,
+    eval_dates: Sequence[pd.Timestamp],
+    lookback_weeks: int,
+    include_weekend: bool,
+) -> tuple[pd.DataFrame, pd.DataFrame, float]:
+    empty_info = pd.DataFrame(columns=["selected_rank", "feature", "score", "corr_full", "corr_recent", "n_obs"])
+    if exog_candidates is None or exog_candidates.empty:
+        return pd.DataFrame(index=series.index), empty_info, 12.0
+
+    tuning_dates = list(eval_dates)[-min(DRIVER_TUNING_POINTS, len(eval_dates)) :] if eval_dates else []
+    actual = pd.Series({pd.Timestamp(day): float(series.loc[day]) for day in tuning_dates}, dtype=float)
+    best = None
+    for feature_limit in _driver_feature_limit_grid(metric):
+        exog_full, driver_info = _select_driver_features(metric, series, exog_candidates, max_features=feature_limit)
+        if exog_full.empty:
+            continue
+        exog_shifted = exog_full.copy()
+        for alpha in _driver_alpha_grid(metric):
+            preds = {}
+            for target_date in tuning_dates:
+                preds[pd.Timestamp(target_date)] = _predict_model_one_step(
+                    model="09 Ridge with drivers",
+                    raw_df=regular_raw,
+                    series=series,
+                    exog_shifted=exog_shifted,
+                    metric=metric,
+                    target_date=pd.Timestamp(target_date),
+                    lookback_weeks=lookback_weeks,
+                    include_weekend=include_weekend,
+                    driver_alpha=float(alpha),
+                )
+            pred = pd.Series(preds, dtype=float)
+            wape, _, mae, _ = _metric_summary(actual, pred.reindex(actual.index))
+            if pd.isna(wape):
+                continue
+            candidate = {
+                "wape": float(wape),
+                "mae": float(mae) if pd.notna(mae) else np.inf,
+                "alpha": float(alpha),
+                "exog_full": exog_full,
+                "driver_info": driver_info,
+            }
+            if best is None or candidate["wape"] < best["wape"] - 1e-9 or (
+                abs(candidate["wape"] - best["wape"]) <= 1e-9 and candidate["mae"] < best["mae"]
+            ):
+                best = candidate
+
+    if best is None:
+        exog_full, driver_info = _select_driver_features(metric, series, exog_candidates, max_features=12)
+        return exog_full, driver_info if driver_info is not None else empty_info, 12.0
+    return best["exog_full"], best["driver_info"], float(best["alpha"])
+
+
 @st.cache_data(show_spinner=False, max_entries=64)
 def compute_model_suite(
     raw_df: pd.DataFrame,
@@ -823,8 +1118,15 @@ def compute_model_suite(
 
     horizon_days = max(int(horizon_days), 1)
     future_idx = pd.date_range(series.index.max() + pd.Timedelta(days=1), periods=horizon_days, freq="D")
+
+    min_train = min(max(90, len(series) // 2), max(len(series) - 21, 30))
+    eval_dates = list(series.index[min_train:]) if len(series) > min_train else []
+    if len(eval_dates) > FAST_BACKTEST_POINTS:
+        eval_dates = eval_dates[-FAST_BACKTEST_POINTS:]
+
+    regular_raw = _regularize_daily(raw_df)
     exog_candidates = _build_exog_features(raw_df, linked_df, warehouse_df, world_state_daily, metric, series.index)
-    exog_full, driver_info = _select_driver_features(series, exog_candidates, max_features=12)
+    exog_full, driver_info, driver_alpha = _tune_driver_setup(metric, series, exog_candidates, regular_raw, eval_dates, lookback_weeks, include_weekend)
     exog_shifted = exog_full.copy() if not exog_full.empty else pd.DataFrame(index=series.index)
 
     future = pd.DataFrame(index=future_idx)
@@ -840,16 +1142,16 @@ def compute_model_suite(
     hist_exog, future_exog = align_known_exog(exog_full, future_idx, lag_periods=0) if not exog_full.empty else (pd.DataFrame(), pd.DataFrame())
     hist_exog = hist_exog.reindex(series.index).ffill().bfill() if not hist_exog.empty else hist_exog
     if hist_exog is not None and not hist_exog.empty:
-        future["09 Ridge with drivers"] = ridge_forecast(series, horizon_days, "daily", exog_hist=hist_exog, exog_future=future_exog).forecast.reindex(future_idx).values
+        future["09 Ridge with drivers"] = ridge_forecast(
+            series,
+            horizon_days,
+            "daily",
+            exog_hist=hist_exog,
+            exog_future=future_exog,
+            alpha=float(driver_alpha),
+        ).forecast.reindex(future_idx).values
     else:
         future["09 Ridge with drivers"] = future["08 Ridge internal"].values
-
-    min_train = min(max(90, len(series) // 2), max(len(series) - 21, 30))
-    eval_dates = list(series.index[min_train:]) if len(series) > min_train else []
-    if len(eval_dates) > FAST_BACKTEST_POINTS:
-        eval_dates = eval_dates[-FAST_BACKTEST_POINTS:]
-
-    regular_raw = _regularize_daily(raw_df)
     backtest_rows: List[Dict[str, object]] = []
     for target_date in eval_dates:
         row: Dict[str, object] = {"date": target_date, "actual": float(series.loc[target_date])}
@@ -863,6 +1165,7 @@ def compute_model_suite(
                 target_date=pd.Timestamp(target_date),
                 lookback_weeks=lookback_weeks,
                 include_weekend=include_weekend,
+                driver_alpha=float(driver_alpha),
             )
         backtest_rows.append(row)
     backtest = pd.DataFrame(backtest_rows)
@@ -1021,6 +1324,48 @@ def _quality_band(wape: float) -> str:
     return "Opatrne"
 
 
+def _render_how_to_read_backtest() -> None:
+    with st.expander("Jak číst přesnost a doporučení", expanded=False):
+        st.markdown(
+            "\n".join(
+                [
+                    f"- `WAPE`: {HOW_TO_READ_METRICS['WAPE']}",
+                    f"- `Bias`: {HOW_TO_READ_METRICS['Bias']}",
+                    f"- `MAE`: {HOW_TO_READ_METRICS['MAE']}",
+                    "- `Nejlepší backtest` je vítěz na posledních rolling oknech, ne marketingový odhad.",
+                    "- `Smart blend` zůstane čistě u vítěze, pokud míchání modelů nepřinese reálné zlepšení.",
+                ]
+            )
+        )
+
+
+def _render_public_driver_explainer() -> None:
+    with st.expander("Co znamenají veřejné indexy v modelu", expanded=False):
+        st.markdown(
+            "\n".join(
+                [
+                    f"- `Brent / diesel / TTF gas`: {PUBLIC_DRIVER_EXPLANATIONS['Brent / diesel / TTF gas']}",
+                    f"- `RWI / GSCPI / container stress`: {PUBLIC_DRIVER_EXPLANATIONS['RWI / GSCPI / container stress']}",
+                    f"- `Eurostat industry / PPI`: {PUBLIC_DRIVER_EXPLANATIONS['Eurostat industry / PPI']}",
+                    f"- `ESAB / copper`: {PUBLIC_DRIVER_EXPLANATIONS['ESAB / copper']}",
+                    "- Tyto indexy jsou doplňková vrstva. Největší váhu mají tehdy, když opravdu zlepšují backtest.",
+                ]
+            )
+        )
+
+
+def _metric_explanation(metric: str) -> str:
+    return METRIC_EXPLANATIONS.get(metric, "Vybraná metrika zachycuje část provozního tlaku skladu a je užitečné ji číst spolu s ostatními KPI.")
+
+
+def _staffing_metric_explanation(metric_label: str) -> str:
+    return STAFFING_METRIC_EXPLANATIONS.get(metric_label, "Tahle staffing metrika převádí forecast práce do srozumitelné kapacitní potřeby.")
+
+
+def _render_metric_story(metric: str, source_label: str) -> None:
+    st.caption(f"{source_label}: {_metric_explanation(metric)}")
+
+
 def _driver_feature_parts(feature: str) -> tuple[str, str, str]:
     text = str(feature)
     prefix = text.split("_", 1)[0] if "_" in text else "self"
@@ -1037,7 +1382,17 @@ def _driver_feature_parts(feature: str) -> tuple[str, str, str]:
 
 def _driver_feature_label(feature: str) -> str:
     _, base, lag_label = _driver_feature_parts(feature)
-    label = DRIVER_LABELS.get(base, base.replace("_", " "))
+    if base in DRIVER_LABELS:
+        label = DRIVER_LABELS[base]
+    else:
+        label = (
+            str(base)
+            .replace("_pct", " pct")
+            .replace("_delta", " delta")
+            .replace("_", " ")
+            .strip()
+            .title()
+        )
     return f"{label} ({lag_label})" if lag_label else label
 
 
@@ -1075,6 +1430,8 @@ def _render_model_story(scores: pd.DataFrame, active_model: str, driver_info: Op
     c2.metric("WAPE viteze", _format_pct(best_wape))
     c3.metric("Vybrany model", active_model)
     c4.metric("Rozdil vs vitez", _format_pct(gap) if pd.notna(gap) else "n/a")
+    st.caption(MODEL_DESCRIPTIONS.get(active_model, ""))
+    _render_how_to_read_backtest()
 
     if picked is None:
         st.caption("Vybrany model zatim nema dost backtest bodu.")
@@ -1098,6 +1455,7 @@ def _render_model_story(scores: pd.DataFrame, active_model: str, driver_info: Op
                 "Model 09 nebere vsechny drivery naslepo. Pouziva jen promene, ktere maji dost bodu a stabilni vztah k cili."
             )
             st.dataframe(driver_table, use_container_width=True, hide_index=True)
+            st.caption("`family` říká, odkud driver pochází: stejný proces, navázaný proces, sklad/příjmy nebo veřejný svět.")
 
 
 def _score_lookup(scores: pd.DataFrame, model: str) -> Optional[pd.Series]:
@@ -1125,6 +1483,9 @@ def _render_backtest_summary(scores: pd.DataFrame, model_name: str, backtest: pd
     c2.metric("WAPE", _format_pct(float(score["wape"])))
     c3.metric("Bias", _format_pct(float(score["bias"])))
     c4.metric("MAE", _format_num(float(score["mae"]), 2))
+    st.caption(
+        "WAPE = typická relativní chyba, Bias = systematické nadhodnocení nebo podhodnocení, MAE = typická chyba v jednotkách vybrané metriky."
+    )
 
     if backtest is None or backtest.empty or model_name not in backtest.columns:
         return
@@ -1151,6 +1512,17 @@ def _render_operational_tab(
     include_weekend_toggle: bool,
 ) -> None:
     st.subheader(tab_name)
+    with st.expander("Jak číst tenhle pohled", expanded=False):
+        st.markdown(
+            "\n".join(
+                [
+                    "- Horní část porovnává stejné týdny a dny mezi roky, takže rychle uvidíš sezonnost a odchylku aktuálního roku.",
+                    "- `Trend mód` se používá jen pro provozní forecast v tomhle okně; detailní srovnání modelů je na kartě `Predikce dopředu`.",
+                    "- Když vynecháš problematické dny z aktuálního roku, schovají se z grafu i z výpočtu forecastu.",
+                    "- Na téhle kartě je cílem rychlé operativní čtení, ne maximálně komplexní model.",
+                ]
+            )
+        )
 
     shift_opts = ["all"]
     shift_col = None
@@ -1313,6 +1685,7 @@ def _render_operational_tab(
 
     for metric in order:
         st.markdown(f"#### {metric_labels.get(metric, metric)}")
+        _render_metric_story(metric, tab_name)
         grid = _week_day_grid(df_model[df_model["iso_year"].isin(years_sel)], metric, week_start, week_end, include_weekend)
         grids[metric] = grid
         if grid.empty:
@@ -1484,6 +1857,17 @@ def _render_prediction_models(src: Sources, exog_bundle: ExogBundle) -> None:
     }
     choice = st.selectbox("Zdroj", list(source_options.keys()), key="pred_source")
     source_key, df, linked_df = source_options[choice]
+    with st.expander("Jak číst tuto kartu", expanded=False):
+        st.markdown(
+            "\n".join(
+                [
+                    "- Tahle karta slouží k poctivému srovnání modelů nad jednou vybranou metrikou.",
+                    "- Forecast se počítá jen pro pracovní dny, aby se nepletly víkendové nuly s reálnou provozní predikcí.",
+                    "- `Vybraný model` je tvoje aktivní volba; `Nejlepší backtest` říká, co opravdu vyhrálo na posledních historických oknech.",
+                    "- Pokud veřejné indexy nepomáhají, model je sice vidí, ale backtest nedovolí, aby uměle přebily lepší jednoduchý model.",
+                ]
+            )
+        )
 
     if df is None or df.empty:
         st.warning("Pro zvolený zdroj nemám data.")
@@ -1518,6 +1902,7 @@ def _render_prediction_models(src: Sources, exog_bundle: ExogBundle) -> None:
     with c4:
         manual_adj = int(st.slider("Korekce (%)", -30, 30, 0, key="pred_adj"))
     st.caption(MODEL_DESCRIPTIONS.get(model_name, ""))
+    _render_metric_story(metric, choice)
 
     lookback_weeks = int(st.slider("Trend okno pro trendové modely", 2, 26, 8, key="pred_lookback"))
     include_weekend = False
@@ -1529,6 +1914,8 @@ def _render_prediction_models(src: Sources, exog_bundle: ExogBundle) -> None:
         driver_notes.append("ESAB / energie / container stress")
     if driver_notes:
         st.caption("Model 09 používá: " + " + ".join(driver_notes))
+    if exog_bundle.world_state_daily is not None and not exog_bundle.world_state_daily.empty:
+        _render_public_driver_explainer()
 
     effective_horizon = int(max(horizon + 12, round(horizon * 1.6)))
 
@@ -1578,6 +1965,7 @@ def _render_prediction_models(src: Sources, exog_bundle: ExogBundle) -> None:
     c6.metric("WAPE", _format_pct(float(score["wape"])) if score is not None else "n/a")
     c7.metric("Součet 10 dní", _format_num(sum_10, 1))
     c8.metric("Průměr den", _format_num(mean_10, 1))
+    st.caption("Součet 10 dní je rychlý kapacitní pohled. Průměr den pomáhá číst běžnou denní zátěž bez toho, aby tě mátly jednotlivé špičky.")
 
     _render_model_story(scores, model_name, suite.get("drivers", pd.DataFrame()) if model_name in {"09 Ridge with drivers", "10 Smart blend"} else None)
 
@@ -1624,6 +2012,17 @@ def _render_staffing_tab(bundle: StaffingBundle) -> None:
     if bundle.forecast is None or bundle.forecast.empty:
         st.warning("Chybí staffing forecast exporty.")
         return
+    with st.expander("Jak číst staffing forecast", expanded=False):
+        st.markdown(
+            "\n".join(
+                [
+                    "- Staffing karta převádí forecast práce do lidí a hodin. Není to samostatný svět, stojí na forecastu binhitů a historické produktivitě.",
+                    "- `Kmen` je držený v pevných bucketech `ráno` a `odpo`, aby model zůstal blízko realitě a nehýbal kmenem nereálně.",
+                    "- `Agentura` dopočítává zbytek potřeby po odečtení realistické kapacity kmene.",
+                    "- Víkendy jsou zobrazením odfiltrované, aby karty ukazovaly pracovní plán, ne nulové víkendové body.",
+                ]
+            )
+        )
 
     forecast = bundle.forecast.copy()
     forecast["date"] = pd.to_datetime(forecast["date"])
@@ -1667,6 +2066,7 @@ def _render_staffing_tab(bundle: StaffingBundle) -> None:
         horizon_days = int(st.slider("Horizont staffing grafu (pracovní dny)", 5, 90, 30, key="staff_horizon"))
 
     actual_col, forecast_col = metric_map[metric_label]
+    st.caption(_staffing_metric_explanation(metric_label))
 
     plot_rows = []
     if not actuals.empty and actual_col in actuals.columns:
@@ -1695,6 +2095,7 @@ def _render_staffing_tab(bundle: StaffingBundle) -> None:
 
     if bundle.driver_backtests is not None and not bundle.driver_backtests.empty:
         st.markdown("#### Backtest driver modelů")
+        st.caption("Tahle tabulka ukazuje, jak dobře forecastujeme samotné provozní drivere, ze kterých staffing vychází.")
         bt = bundle.driver_backtests.copy()
         for col in ["wape", "bias"]:
             bt[col] = bt[col].map(_format_pct)
@@ -1703,6 +2104,7 @@ def _render_staffing_tab(bundle: StaffingBundle) -> None:
 
     if bundle.ratio_backtests is not None and not bundle.ratio_backtests.empty:
         st.markdown("#### Backtest staffing převodu")
+        st.caption("Tahle tabulka říká, jak přesně se daří převést známý výkon na lidi a hodiny. Odděluje chybu forecastu práce od chyby staffing převodu.")
         ratio = bundle.ratio_backtests.copy()
         ratio["wape"] = ratio["wape"].map(_format_pct)
         ratio["mae"] = ratio["mae"].map(lambda value: _format_num(value, 2))
@@ -1710,6 +2112,7 @@ def _render_staffing_tab(bundle: StaffingBundle) -> None:
 
     if not horizon.empty:
         st.markdown("#### Horizon points")
+        st.caption("Body 5/10/20/30 dní jsou rychlé orientační checkpointy pro plánování. Ber je jako pracovní orientaci, ne jako fixní rozpis směn.")
         st.dataframe(horizon, use_container_width=True, hide_index=True)
 
     st.markdown("#### Staffing forecast tabulka")
@@ -1746,6 +2149,7 @@ def _render_staffing_tab(bundle: StaffingBundle) -> None:
 
 def tab_predikce(src: Sources, staffing_bundle: StaffingBundle, exog_bundle: ExogBundle) -> None:
     st.subheader("Predikce dopředu 📈")
+    st.caption("`Modely výkonu` porovnávají forecasty KPI jako binhits, trips a kontejnery. `Staffing` převádí forecast práce do lidí, hodin a směnových bucketů.")
     sub1, sub2 = st.tabs(["Modely výkonu", "Staffing"])
 
     with sub1:
