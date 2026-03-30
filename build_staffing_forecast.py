@@ -14,7 +14,6 @@ from forecasting import align_known_exog, baseline_as_result, ridge_forecast, ro
 
 ROOT = Path(__file__).resolve().parent
 EXPORT_DIR = ROOT / "staffing_forecast_exports"
-DATE_NOW = pd.Timestamp("2026-03-27")
 HORIZON_DAYS = 91
 PRODUCTIVE_ACTIVITIES = {"Kompletace", "Kontrola", "ZaskladnÄ›nĂ­", "VyklĂˇdka", "PĹ™esuny"}
 ATTENDANCE_BUCKETS = ("kmen_early", "kmen_late", "agency_day", "agency_night")
@@ -40,6 +39,13 @@ def _safe_median(values: pd.Series, default: float = 0.0) -> float:
     if series.empty:
         return float(default)
     return float(series.median())
+
+
+def _latest_known_date(*dates: object) -> pd.Timestamp:
+    valid = [pd.Timestamp(value).normalize() for value in dates if pd.notna(value)]
+    if not valid:
+        return pd.Timestamp.today().normalize()
+    return max(valid)
 
 
 def load_packed_daily() -> pd.DataFrame:
@@ -237,9 +243,15 @@ class SeriesForecast:
     scores: pd.DataFrame
 
 
-def forecast_daily_series(series: pd.Series, exog_full: pd.DataFrame | None = None, backtest_horizon: int = 10) -> SeriesForecast:
+def forecast_daily_series(
+    series: pd.Series,
+    exog_full: pd.DataFrame | None = None,
+    backtest_horizon: int = 10,
+    anchor_date: pd.Timestamp | None = None,
+) -> SeriesForecast:
     s = series.dropna().astype(float)
-    gap_days = max(0, (DATE_NOW.normalize() - pd.Timestamp(s.index.max()).normalize()).days)
+    anchor = pd.Timestamp(anchor_date).normalize() if anchor_date is not None else pd.Timestamp(s.index.max()).normalize()
+    gap_days = max(0, (anchor - pd.Timestamp(s.index.max()).normalize()).days)
     horizon = HORIZON_DAYS + gap_days
     future_idx = pd.date_range(s.index.max() + pd.Timedelta(days=1), periods=horizon, freq="D")
 
@@ -272,7 +284,7 @@ def forecast_daily_series(series: pd.Series, exog_full: pd.DataFrame | None = No
     scores = pd.DataFrame(score_rows).sort_values(["wape", "mae"], na_position="last").reset_index(drop=True)
     best = str(scores.iloc[0]["model"]) if not scores.empty else "internal"
     selected = {"baseline": baseline, "internal": internal, "global": global_result}.get(best, internal)
-    forecast = selected.forecast[selected.forecast.index > DATE_NOW.normalize()].copy()
+    forecast = selected.forecast[selected.forecast.index > anchor].copy()
     return SeriesForecast(target=series.name or "target", selected_model=best, forecast=forecast, scores=scores)
 
 
@@ -470,11 +482,18 @@ def build_forecasts() -> None:
     staffing_actuals, _prod_shift = build_staffing_actuals()
     staffing_actuals.to_csv(EXPORT_DIR / "staffing_capacity_actuals.csv", index=False, encoding="utf-8-sig")
 
-    loaded_orders_fc = forecast_daily_series(loaded["orders_nunique"].rename("loaded_orders_nunique"))
-    trips_fc = forecast_daily_series(loaded["trips_total"].rename("trips_total"))
-    loaded_gross_fc = forecast_daily_series(loaded["gross_tons"].rename("loaded_gross_tons"))
-    day_binhits_fc = forecast_daily_series(packed_shift["packed_day_binhits"].rename("forecast_day_binhits"))
-    night_binhits_fc = forecast_daily_series(packed_shift["packed_night_binhits"].rename("forecast_night_binhits"))
+    anchor_date = _latest_known_date(
+        packed.index.max() if not packed.empty else pd.NaT,
+        packed_shift.index.max() if not packed_shift.empty else pd.NaT,
+        loaded.index.max() if not loaded.empty else pd.NaT,
+        staffing_actuals["date"].max() if not staffing_actuals.empty else pd.NaT,
+    )
+
+    loaded_orders_fc = forecast_daily_series(loaded["orders_nunique"].rename("loaded_orders_nunique"), anchor_date=anchor_date)
+    trips_fc = forecast_daily_series(loaded["trips_total"].rename("trips_total"), anchor_date=anchor_date)
+    loaded_gross_fc = forecast_daily_series(loaded["gross_tons"].rename("loaded_gross_tons"), anchor_date=anchor_date)
+    day_binhits_fc = forecast_daily_series(packed_shift["packed_day_binhits"].rename("forecast_day_binhits"), anchor_date=anchor_date)
+    night_binhits_fc = forecast_daily_series(packed_shift["packed_night_binhits"].rename("forecast_night_binhits"), anchor_date=anchor_date)
 
     driver_scores = pd.concat(
         [
@@ -487,7 +506,7 @@ def build_forecasts() -> None:
         ignore_index=True,
     )
 
-    future_dates = pd.date_range(DATE_NOW.normalize() + pd.Timedelta(days=1), periods=HORIZON_DAYS, freq="D")
+    future_dates = pd.date_range(anchor_date + pd.Timedelta(days=1), periods=HORIZON_DAYS, freq="D")
     future = pd.DataFrame({"date": future_dates})
     future["forecast_day_binhits"] = day_binhits_fc.forecast.reindex(future_dates).ffill().bfill().values
     future["forecast_night_binhits"] = night_binhits_fc.forecast.reindex(future_dates).ffill().bfill().values
@@ -640,7 +659,7 @@ def build_forecasts() -> None:
     summary_lines = [
         "# Staffing Forecast",
         "",
-        f"- Run date: {DATE_NOW.date()}",
+        f"- Run date: {anchor_date.date()}",
         f"- Day binhits forecast model: {day_binhits_fc.selected_model}",
         f"- Night binhits forecast model: {night_binhits_fc.selected_model}",
         f"- Binhits last actual date: {packed.index.max().date()}",

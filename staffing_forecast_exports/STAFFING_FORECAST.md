@@ -1,9 +1,9 @@
 # Staffing Forecast
 
-- Run date: 2026-03-27
+- Run date: 2026-03-28
 - Day binhits forecast model: internal
 - Night binhits forecast model: internal
-- Binhits last actual date: 2026-03-27
+- Binhits last actual date: 2026-03-28
 - Attendance last actual date: 2026-03-21
 - Median day binhits per paid hour: 2.71
 - Median night binhits per paid hour: 2.65
