@@ -1,22 +1,20 @@
 # Staffing Forecast
 
 - Run date: 2026-03-28
-- Day binhits forecast model: internal
-- Night binhits forecast model: internal
-- Binhits last actual date: 2026-03-28
-- Attendance last actual date: 2026-03-21
-- Median day binhits per paid hour: 2.71
-- Median night binhits per paid hour: 2.65
+- FTE model: baseline
+- Last packed actual: 2026-03-28
+- Last staffing actual: 2026-03-28
 
 ## Staffing Logic
 
-- Forecast day and night binhits separately.
-- Convert shift binhits to paid hours with recent weekday productivity for the same shift.
-- Hold `kmen` in fixed buckets: early (06-14 proxy) and late (14-22 proxy).
-- Let agency absorb flex separately for day and night based on remaining required hours.
-- Keep a total productive-workers estimate as a secondary view for operations.
+- Historie lidi se bere z workeru, kteri meli nejakou cinnost v `TimeManagement/Data`.
+- Celkovy forecast je ukotveny pres `ESAB placene hodiny / 8 = FTE`.
+- Rozpad na kmen/agenturu a cinnosti bere prioritu z rucne vyplneneho `staffing_manual_history.csv`.
+- Pokud manualni rozpad chybi, fallback je na auto-suggest z aktivit. Nakladka je v auto-suggestu nulova a ma se dopsat rucne.
 
-## Notes
+## Manual Input
 
-- `required_kmen_*` is anchored to recent positive observed weekday capacity, not free reallocation.
-- End-to-end planning error is staffing-ratio error plus shift-level binhits forecast error.
+- Vyplnuj `staffing_manual_history.csv` jen pro minulost.
+- Kmen: morning 06-14, afternoon 14-22.
+- Agentura: day 07-19, night 19-07.
+- `helper_esab_paid_hours` a `helper_esab_fte_8h` slouzi jako kotva reality.
