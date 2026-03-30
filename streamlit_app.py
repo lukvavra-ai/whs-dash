@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -1308,6 +1309,13 @@ def _format_pct(value: float) -> str:
     return "n/a" if pd.isna(value) else f"{value:.1%}"
 
 
+def _format_wape_gap(value: float) -> str:
+    if pd.isna(value):
+        return "n/a"
+    pct_points = float(value) * 100.0
+    return f"{pct_points:.2f} p. b." if abs(pct_points) < 1 else f"{pct_points:.1f} p. b."
+
+
 def _format_num(value: float, digits: int = 1) -> str:
     return "n/a" if pd.isna(value) else f"{value:,.{digits}f}".replace(",", " ")
 
@@ -1322,6 +1330,11 @@ def _quality_band(wape: float) -> str:
     if wape <= 0.30:
         return "Pouzitelne"
     return "Opatrne"
+
+
+def _quality_label(wape: float) -> str:
+    band = _quality_band(wape)
+    return f"Pásmo přesnosti podle WAPE: {band}."
 
 
 def _render_how_to_read_backtest() -> None:
@@ -1429,22 +1442,29 @@ def _render_model_story(scores: pd.DataFrame, active_model: str, driver_info: Op
     c1.metric("Nejlepsi backtest", str(best["model"]))
     c2.metric("WAPE viteze", _format_pct(best_wape))
     c3.metric("Vybrany model", active_model)
-    c4.metric("Rozdil vs vitez", _format_pct(gap) if pd.notna(gap) else "n/a")
+    c4.metric("Rozdil vs vitez", _format_wape_gap(gap))
     st.caption(MODEL_DESCRIPTIONS.get(active_model, ""))
     _render_how_to_read_backtest()
 
     if picked is None:
         st.caption("Vybrany model zatim nema dost backtest bodu.")
     elif active_model == str(best["model"]):
-        st.success(f"Vybrany model je v tomhle rezu aktualne nejpresnejsi. Kvalita: {_quality_band(picked_wape)}.")
-    elif pd.notna(gap) and gap <= 0.02:
+        st.success(
+            f"Vybrany model je aktualni vitez backtestu. {_quality_label(picked_wape)}"
+        )
+    elif pd.notna(gap) and gap <= 0.001:
         st.info(
-            f"Vybrany model je velmi blizko vitezi. WAPE je horsi jen o {_format_pct(gap)}. "
-            f"Kvalita: {_quality_band(picked_wape)}."
+            f"Vybrany model neni vitez, ale rozdil je prakticky zanedbatelny: {_format_wape_gap(gap)}. "
+            f"Po zaokrouhleni muze vychazet stejne jako vitez. {_quality_label(picked_wape)}"
+        )
+    elif pd.notna(gap) and gap <= 0.005:
+        st.info(
+            f"Vybrany model je velmi blizko vitezi, ale neni to stejny vysledek. "
+            f"Rozdil v backtestu je {_format_wape_gap(gap)}. {_quality_label(picked_wape)}"
         )
     else:
         st.warning(
-            f"Vybrany model prohrava proti vitezi o {_format_pct(gap)} WAPE. "
+            f"Vybrany model prohrava proti vitezi o {_format_wape_gap(gap)} WAPE. "
             f"Pokud chces maximalni presnost, ber spis `{best['model']}`."
         )
 
@@ -2164,9 +2184,11 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Data")
-        base = st.text_input("Složka s KPI CSV", value=".")
+        default_base = os.getenv("WHS_DATA_DIR", ".")
+        base = st.text_input("Složka s KPI CSV", value=default_base)
         base_dir = Path(base).resolve()
         st.caption("Očekává: packed/loaded KPI CSV a volitelně staffing_forecast_exports + warehouse_state_exports + world_state_feature_weekly.csv")
+        st.caption(f"Default bere `WHS_DATA_DIR={default_base}`.")
 
     src, missing = load_sources(str(base_dir))
     staffing_bundle = load_staffing_bundle(str(base_dir))
