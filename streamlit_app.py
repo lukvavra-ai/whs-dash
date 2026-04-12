@@ -57,9 +57,32 @@ def _coerce_date(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        iso = df["date"].dt.isocalendar()
+        if "iso_year" not in df.columns:
+            df["iso_year"] = pd.to_numeric(iso.year, errors="coerce")
+        if "iso_week" not in df.columns:
+            df["iso_week"] = pd.to_numeric(iso.week, errors="coerce")
     if "shift_start" in df.columns:
         df["shift_start"] = pd.to_datetime(df["shift_start"], errors="coerce")
+    if "weekday" not in df.columns and "iso_weekday" in df.columns:
+        df["weekday"] = pd.to_numeric(df["iso_weekday"], errors="coerce")
+    if "weekday" not in df.columns and "date" in df.columns:
+        df["weekday"] = pd.to_datetime(df["date"], errors="coerce").dt.weekday + 1
+    if "weekday_name" not in df.columns and "date" in df.columns:
+        df["weekday_name"] = pd.to_datetime(df["date"], errors="coerce").dt.day_name()
+    if "shift_name" not in df.columns and "shift" in df.columns:
+        df["shift_name"] = df["shift"]
+    if "shift" not in df.columns and "shift_name" in df.columns:
+        df["shift"] = df["shift_name"]
     return df
+
+
+def _calendar_group_cols(df: pd.DataFrame) -> List[str]:
+    cols: List[str] = []
+    for col in ["date", "iso_year", "iso_week", "weekday", "weekday_name"]:
+        if col in df.columns:
+            cols.append(col)
+    return cols
 
 
 @st.cache_data(show_spinner=False)
@@ -193,7 +216,10 @@ def _week_day_grid(
     week_end: int,
     include_weekend: bool,
 ) -> pd.DataFrame:
-    d = df.copy()
+    d = _coerce_date(df)
+    required = {"iso_week", "weekday", metric}
+    if not required.issubset(d.columns):
+        return pd.DataFrame()
     d = d[d["iso_week"].between(week_start, week_end, inclusive="both")].copy()
     if not include_weekend:
         d = d[d["weekday"].between(1, 5, inclusive="both")].copy()
@@ -613,12 +639,13 @@ def tab_balení(src: Sources) -> None:
     )
 
     if shift_sel == "all":
-        df = src.packed_daily.copy()
+        df = _coerce_date(src.packed_daily)
     else:
-        df = src.packed_shift.copy()
+        df = _coerce_date(src.packed_shift)
         df = df[df[shift_col].astype(str) == shift_sel].copy()
         # keep daily grain
-        df = df.groupby(["date","iso_year","iso_week","weekday","weekday_name"], dropna=False).sum(numeric_only=True).reset_index()
+        group_cols = _calendar_group_cols(df)
+        df = df.groupby(group_cols, dropna=False).sum(numeric_only=True).reset_index()
 
     if "date" not in df.columns:
         st.error("V packed_daily_kpis.csv chybí 'date'.")
@@ -874,11 +901,12 @@ def tab_nakladky(src: Sources) -> None:
                              format_func=lambda x: "Celkem" if x=="all" else ("Ranní" if x=="morning" else ("Odpolední" if x=="afternoon" else x)))
 
     if shift_sel == "all":
-        df = src.loaded_daily.copy()
+        df = _coerce_date(src.loaded_daily)
     else:
-        df = src.loaded_shift.copy()
+        df = _coerce_date(src.loaded_shift)
         df = df[df["shift_name"].astype(str) == shift_sel].copy()
-        df = df.groupby(["date","iso_year","iso_week","weekday","weekday_name"], dropna=False).sum(numeric_only=True).reset_index()
+        group_cols = _calendar_group_cols(df)
+        df = df.groupby(group_cols, dropna=False).sum(numeric_only=True).reset_index()
 
     if "date" not in df.columns:
         st.error("V loaded_daily_kpis.csv chybí 'date'.")
@@ -1180,11 +1208,12 @@ def _render_operational_tab(
     shift_sel = st.selectbox("Směna", shift_opts, index=0, key=f"{key_prefix}_shift_new", format_func=lambda x: shift_labels.get(x, x))
 
     if shift_sel == "all":
-        df = daily_df.copy()
+        df = _coerce_date(daily_df)
     else:
-        df = shift_df.copy()
+        df = _coerce_date(shift_df)
         df = df[df[shift_key].astype(str) == shift_sel].copy()
-        df = df.groupby(["date", "iso_year", "iso_week", "weekday", "weekday_name"], dropna=False).sum(numeric_only=True).reset_index()
+        group_cols = _calendar_group_cols(df)
+        df = df.groupby(group_cols, dropna=False).sum(numeric_only=True).reset_index()
 
     metrics_all = available_metrics(df)
     metrics_all = [metric for metric in metric_labels if metric in metrics_all] or metrics_all
