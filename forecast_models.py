@@ -666,6 +666,8 @@ def build_future_dates_for_week_window(
                 day = pd.Timestamp(datetime.date.fromisocalendar(int(eval_year), int(week), int(weekday))).normalize()
             except ValueError:
                 continue
+            if weekday <= 5 and _is_czech_holiday(day):
+                continue
             if day > last_date:
                 future.append(day)
     return pd.DatetimeIndex(sorted(set(future)))

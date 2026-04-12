@@ -227,6 +227,53 @@ def _render_how_to_read(title: str, bullets: List[str], expanded: bool = False) 
             st.markdown(f"- {bullet}")
 
 
+MODEL_EXPLANATIONS = {
+    "seasonal_baseline": "Stejný slot v historii. Čistý referenční benchmark bez trendu a bez externích vlivů.",
+    "last_week": "Opakuje poslední týden. Je rychlý, ale citlivý na jednorázové výkyvy.",
+    "four_week_mean": "Průměr posledních čtyř stejných dnů v týdnu. Dobré pro stabilní provoz s menším šumem.",
+    "rolling_mean": "Krátký klouzavý průměr. Umí chytit změnu tempa, ale hůř drží sezónní rytmus.",
+    "seasonal_trend": "Sezónní slot krát trend posledních týdnů. Silný jednoduchý model pro operativu.",
+    "calendar_index": "Sezónnost stejného slotu upravená o kalendářní index a sílu roku.",
+    "static_ytd": "Sezónní slot krát síla aktuálního roku proti minulosti.",
+    "dynamic_rolling": "Kombinuje krátký trend a sílu roku. Reaguje rychleji než čistá sezónnost.",
+    "ridge_internal": "Strojový model jen z interní historie vybrané metriky a kalendáře.",
+    "ridge_external": "Strojový model z interní historie plus příjmy, veřejné indexy, svátky a kalendářní tlak.",
+    "smart_blend": "Automatická kombinace modelů podle rolling backtestu. Když mix nepomáhá, drží se vítěze.",
+}
+
+
+METRIC_EXPLANATIONS = {
+    "binhits": "Nejlepší rychlý obraz denní zátěže balení. Čím vyšší, tím víc práce proteklo binovými operacemi.",
+    "gross_tons": "Hmotnostní tlak. Pomáhá odlišit dny, kdy je podobný počet kusů, ale jiná fyzická náročnost.",
+    "cartons_count": "Počet kartonových výstupů. Užitečné pro balicí mix a jemnější operativní rytmus.",
+    "pallets_count": "Počet paletových výstupů. Důležité pro skladový prostor i manipulační tlak.",
+    "orders_nunique": "Unikátní výdejky / objednávky. Dobré jako tlak na zpracování a rozdrobenost práce.",
+    "trips_total": "Celkové nakládky. Základní provozní KPI pro výdeje.",
+    "trips_export": "Exportní nakládky. Silně citlivé na konec měsíce, konec čtvrtletí a kontejnery.",
+    "trips_europe": "Evropské nakládky. Obvykle stabilnější než export mimo Evropu.",
+    "containers_count": "Kontejnery. Nejhlučnější KPI, ale zásadní pro exportní režim a závěry měsíce.",
+}
+
+
+def _latest_date(df: Optional[pd.DataFrame]) -> Optional[pd.Timestamp]:
+    if df is None or df.empty or "date" not in df.columns:
+        return None
+    dates = pd.to_datetime(df["date"], errors="coerce").dropna()
+    if dates.empty:
+        return None
+    return pd.Timestamp(dates.max()).normalize()
+
+
+def _render_runtime_status(src: Sources, base_dir: Path) -> None:
+    receipts = load_receipts_features_cached(str(base_dir))
+    market = load_market_signals_cached(str(base_dir), force_refresh=False)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Kompletace do", _latest_date(src.packed_daily).strftime("%d.%m.%Y") if _latest_date(src.packed_daily) is not None else "n/a")
+    c2.metric("Výdeje do", _latest_date(src.loaded_daily).strftime("%d.%m.%Y") if _latest_date(src.loaded_daily) is not None else "n/a")
+    c3.metric("Příjmy do", receipts.index.max().strftime("%d.%m.%Y") if receipts is not None and not receipts.empty else "n/a")
+    c4.metric("Market cache do", market.index.max().strftime("%d.%m.%Y") if market is not None and not market.empty else "n/a")
+
+
 
 def _weekday_short(wd: int) -> str:
     # 1..7
@@ -1359,7 +1406,7 @@ def _render_operational_tab(
         selected_model = st.selectbox(
             "Model predikce",
             options=list(model_choices.keys()),
-            index=list(model_choices.keys()).index("seasonal_trend"),
+            index=list(model_choices.keys()).index("smart_blend"),
             key=f"{key_prefix}_model_new",
             format_func=lambda m: model_choices[m],
             disabled=not show_forecast,
@@ -1372,6 +1419,7 @@ def _render_operational_tab(
         "Model 11 Smart blend míchá modely podle rolling backtestu a zůstane u vítěze, když mix nepomáhá. "
         "Svátky se do modelu promítají jako jiný režim než běžný pracovní den."
     )
+    st.caption("Vybraný model: " + MODEL_EXPLANATIONS.get(selected_model, "Model bez doplňkového popisu."))
 
     grids: Dict[str, pd.DataFrame] = {}
     forecasts: Dict[str, pd.DataFrame] = {}
@@ -1379,6 +1427,8 @@ def _render_operational_tab(
 
     for metric in metrics_ordered:
         st.markdown(f"#### {metric_labels.get(metric, metric)}")
+        if metric in METRIC_EXPLANATIONS:
+            st.caption(METRIC_EXPLANATIONS[metric])
         grid = _week_day_grid(df[df["iso_year"].isin(years_sel)], metric, int(week_start), int(week_end), include_weekend)
         grids[metric] = grid
         if grid.empty:
@@ -1524,6 +1574,8 @@ def tab_predikce_v2(src: Sources, base_dir: Path) -> None:
     metrics = available_metrics(df)
     preferred = ["binhits", "gross_tons", "pallets_count", "trips_total", "containers_count"]
     metric = st.selectbox("Metrika", [m for m in preferred if m in metrics] or metrics, key="pred_metric_new")
+    if metric in METRIC_EXPLANATIONS:
+        st.caption(METRIC_EXPLANATIONS[metric])
 
     c1, c2, c3 = st.columns([2, 2, 3])
     with c1:
@@ -1654,5 +1706,50 @@ def main() -> None:
         tab_predikce_v2(src, base_dir)
 
 
+def app_main() -> None:
+    st.title("Warehouse Dashboard - Baleni & Nakladky")
+
+    with st.sidebar:
+        st.header("Data")
+        base = st.text_input("Slozka s KPI CSV", value=".")
+        base_dir = Path(base).resolve()
+        st.caption(
+            "Ocekava: packed_daily_kpis.csv, packed_shift_kpis.csv, loaded_daily_kpis.csv, loaded_shift_kpis.csv."
+        )
+        st.caption("Volitelne: receipts_daily_features.csv + external_market_daily.csv pro bohatsi modely.")
+
+    src, missing = load_sources(base_dir)
+
+    if missing:
+        st.warning("Chybi nektere KPI soubory. Dashboard pobezi, ale cast pohledu bude prazdna.\n\n**Chybi:** " + ", ".join(missing))
+
+    st.caption(
+        "Forecast kombinuje historii provozu, receipt features z prijmu, verejne market proxy, svatky a kalendarni tlak konce mesice / ctvrtleti."
+    )
+    _render_runtime_status(src, base_dir)
+    _render_how_to_read(
+        "Co je v teto verzi dashboardu zapocteno",
+        [
+            "Historie se porovnava po stejnych slotech tydne a roku, ne jen hrube po prumeru.",
+            "Prijmy vstupuji pres denni receipt features misto raw obrich CSV, aby byl runtime rychly.",
+            "Svatky jsou vlastni rezim, stejne dulezity jako vikendova logika.",
+            "Kalendarni tlak konce mesice a ctvrtleti je zakomponovany hlavne v pokrocilejsich modelech.",
+            "Default je Smart blend, protoze bere viteze z backtestu a neprimichava nic navic, kdyz to nepomaha.",
+        ],
+        expanded=False,
+    )
+
+    tab1, tab2, tab3 = st.tabs(["Baleni", "Nakladky", "Predikce"])
+
+    with tab1:
+        tab_baleni_v2(src, base_dir)
+
+    with tab2:
+        tab_nakladky_v2(src, base_dir)
+
+    with tab3:
+        tab_predikce_v2(src, base_dir)
+
+
 if __name__ == "__main__":
-    main()
+    app_main()
