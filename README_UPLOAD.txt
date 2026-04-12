@@ -7,6 +7,7 @@ Included:
 - forecast_models.py
 - external_signals.py
 - external_market_daily.csv
+- receipts_daily_features.csv
 - requirements.txt
 - loaded_daily_kpis.csv
 - loaded_shift_kpis.csv

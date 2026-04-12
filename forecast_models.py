@@ -6,6 +6,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from dateutil.easter import easter
 
 
 MODEL_LABELS = {
@@ -25,6 +26,68 @@ MODEL_LABELS = {
 BASE_MODEL_KEYS = [key for key in MODEL_LABELS if key != "smart_blend"]
 DAILY_LAGS = (1, 2, 5, 7, 14, 28)
 DAILY_WINDOWS = (5, 10, 20)
+
+
+def _czech_holiday_dates(year: int) -> set[pd.Timestamp]:
+    easter_sunday = easter(int(year))
+    good_friday = pd.Timestamp(easter_sunday - datetime.timedelta(days=2)).normalize()
+    easter_monday = pd.Timestamp(easter_sunday + datetime.timedelta(days=1)).normalize()
+    fixed = [
+        pd.Timestamp(year=int(year), month=1, day=1),
+        pd.Timestamp(year=int(year), month=5, day=1),
+        pd.Timestamp(year=int(year), month=5, day=8),
+        pd.Timestamp(year=int(year), month=7, day=5),
+        pd.Timestamp(year=int(year), month=7, day=6),
+        pd.Timestamp(year=int(year), month=9, day=28),
+        pd.Timestamp(year=int(year), month=10, day=28),
+        pd.Timestamp(year=int(year), month=11, day=17),
+        pd.Timestamp(year=int(year), month=12, day=24),
+        pd.Timestamp(year=int(year), month=12, day=25),
+        pd.Timestamp(year=int(year), month=12, day=26),
+    ]
+    return {ts.normalize() for ts in fixed + [good_friday, easter_monday]}
+
+
+def _is_czech_holiday(value: pd.Timestamp | datetime.date) -> bool:
+    ts = pd.Timestamp(value).normalize()
+    return ts in _czech_holiday_dates(int(ts.year))
+
+
+def _is_last_friday_of_month(value: pd.Timestamp | datetime.date) -> bool:
+    ts = pd.Timestamp(value).normalize()
+    return ts.weekday() == 4 and (ts + pd.Timedelta(days=7)).month != ts.month
+
+
+def _is_last_friday_of_quarter(value: pd.Timestamp | datetime.date) -> bool:
+    ts = pd.Timestamp(value).normalize()
+    return _is_last_friday_of_month(ts) and ts.month in (3, 6, 9, 12)
+
+
+def _business_days_to_month_end(value: pd.Timestamp | datetime.date) -> int:
+    ts = pd.Timestamp(value).normalize()
+    month_end = ts + pd.offsets.MonthEnd(0)
+    days = pd.date_range(ts, month_end, freq="D")
+    return int(sum(1 for day in days if day.weekday() < 5 and not _is_czech_holiday(day)) - 1)
+
+
+def _holiday_factor(train: pd.Series, future_date: pd.Timestamp) -> float:
+    frame = pd.DataFrame({"value": train.values}, index=pd.DatetimeIndex(train.index))
+    if frame.empty:
+        return 1.0
+    idx = pd.DatetimeIndex(frame.index)
+    frame["is_holiday"] = idx.map(_is_czech_holiday).astype(bool)
+    frame["weekday"] = idx.weekday + 1
+    holiday_target = _is_czech_holiday(future_date)
+    same_weekday = frame[frame["weekday"] == int(future_date.weekday() + 1)]
+    if holiday_target:
+        holiday_vals = frame[frame["is_holiday"]]["value"]
+        base_vals = same_weekday[~same_weekday["is_holiday"]]["value"]
+        if len(holiday_vals) >= 2 and len(base_vals) >= 3:
+            denom = float(base_vals.median())
+            if denom > 1e-9:
+                return _clip_factor(float(holiday_vals.median()) / denom, 0.05, 0.85)
+        return 0.35
+    return 1.0
 
 
 @dataclass
@@ -93,7 +156,7 @@ def _future_operating_dates(series: pd.Series, horizon: int) -> pd.DatetimeIndex
     dates: List[pd.Timestamp] = []
     current = pd.Timestamp(series.index.max()) + pd.Timedelta(days=1)
     while len(dates) < horizon:
-        if current.weekday() in weekdays:
+        if current.weekday() in weekdays and not _is_czech_holiday(current):
             dates.append(current.normalize())
         current += pd.Timedelta(days=1)
     return pd.DatetimeIndex(dates)
@@ -106,10 +169,19 @@ def _seasonal_template(train: pd.Series, future_date: pd.Timestamp) -> float:
     frame = pd.DataFrame({"value": train.values}, index=idx)
     frame["iso_week"] = idx.isocalendar().week.astype(int)
     frame["weekday"] = idx.weekday + 1
+    frame["is_holiday"] = idx.map(_is_czech_holiday).astype(bool)
+    target_is_holiday = _is_czech_holiday(future_date)
+    slot = frame[(frame["iso_week"] == int(future_date.isocalendar().week)) & (frame["weekday"] == int(future_date.weekday() + 1))]
+    if target_is_holiday:
+        slot = slot[slot["is_holiday"]]
+    else:
+        slot = slot[~slot["is_holiday"]]
+    if len(slot) >= 2:
+        return float(slot["value"].median())
     same_slot = frame[(frame["iso_week"] == int(future_date.isocalendar().week)) & (frame["weekday"] == int(future_date.weekday() + 1))]
     if len(same_slot) >= 2:
         return float(same_slot["value"].median())
-    same_weekday = frame[frame["weekday"] == int(future_date.weekday() + 1)]["value"]
+    same_weekday = frame[(frame["weekday"] == int(future_date.weekday() + 1)) & (frame["is_holiday"] == target_is_holiday)]["value"]
     if len(same_weekday) >= 3:
         return float(same_weekday.tail(12).median())
     return float(frame["value"].tail(10).mean())
@@ -173,12 +245,19 @@ def _calendar_index_value(train: pd.Series, future_date: pd.Timestamp) -> float:
     frame["year"] = idx.year
     frame["iso_week"] = idx.isocalendar().week.astype(int)
     frame["weekday"] = idx.weekday + 1
+    frame["is_holiday"] = idx.map(_is_czech_holiday).astype(bool)
     medians = frame.groupby("year")["value"].median()
     ratios = []
+    target_is_holiday = _is_czech_holiday(future_date)
     for year, med in medians.items():
         if pd.isna(med) or med <= 1e-9:
             continue
-        sample = frame[(frame["year"] == year) & (frame["iso_week"] == int(future_date.isocalendar().week)) & (frame["weekday"] == int(future_date.weekday() + 1))]
+        sample = frame[
+            (frame["year"] == year)
+            & (frame["iso_week"] == int(future_date.isocalendar().week))
+            & (frame["weekday"] == int(future_date.weekday() + 1))
+            & (frame["is_holiday"] == target_is_holiday)
+        ]
         if not sample.empty:
             ratios.append(float(sample["value"].mean() / med))
     if not ratios:
@@ -194,6 +273,11 @@ def _calendar_features(date: pd.Timestamp, position: int) -> Dict[str, float]:
     row["weekday"] = float(date.weekday())
     for idx in range(7):
         row[f"dow_{idx}"] = 1.0 if date.weekday() == idx else 0.0
+    row["is_holiday"] = float(_is_czech_holiday(date))
+    row["is_workday_nonholiday"] = float(date.weekday() < 5 and not _is_czech_holiday(date))
+    row["is_last_friday_of_month"] = float(_is_last_friday_of_month(date))
+    row["is_last_friday_of_quarter"] = float(_is_last_friday_of_quarter(date))
+    row["business_days_to_month_end"] = float(_business_days_to_month_end(date))
     row["month"] = float(date.month)
     row["quarter"] = float(date.quarter)
     row["is_month_start"] = float(date.is_month_start)
@@ -372,6 +456,7 @@ def _predict_single_model(
             pred = template * _clip_factor(recent_factor * 0.55 + ytd_factor * 0.45, 0.72, 1.28)
         else:
             pred = template
+        pred = pred * _holiday_factor(extended, day)
         pred = max(0.0, float(pred))
         cap = max(float(history.quantile(0.98)) * 1.2, float(history.tail(20).max()) * 1.15, 1.0)
         pred = min(pred, cap)

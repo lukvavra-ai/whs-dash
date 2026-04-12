@@ -152,16 +152,79 @@ def load_market_signals_cached(base_dir_str: str, force_refresh: bool = False) -
     return load_or_refresh_market_signals(Path(base_dir_str), force_refresh=force_refresh)
 
 
-def build_exog_frame(base_dir: Path, force_refresh: bool = False) -> pd.DataFrame:
-    exog = load_market_signals_cached(str(base_dir), force_refresh=force_refresh)
-    if exog is None or exog.empty:
+@st.cache_data(show_spinner=False)
+def load_receipts_features_cached(base_dir_str: str) -> pd.DataFrame:
+    base_dir = Path(base_dir_str)
+    candidates = [
+        base_dir / "receipts_daily_features.csv",
+        base_dir / "KPI" / "receipts_daily_features.csv",
+    ]
+    for path in candidates:
+        if path.exists():
+            frame = _read_csv(path)
+            frame = _coerce_date(frame)
+            if "date" in frame.columns:
+                frame = frame.dropna(subset=["date"]).sort_values("date").set_index("date")
+                return frame
+    return pd.DataFrame()
+
+
+def _prepare_receipts_exog(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame is None or frame.empty:
         return pd.DataFrame()
-    cols = [col for col in exog.columns if col.endswith("_5d_pct") or col.endswith("_20d_pct") or col in {"esab_close", "brent_usd_bbl", "copper_usd_t", "vix_index"}]
-    return exog[cols].shift(1).ffill().bfill()
+    keep = [
+        "receipts_lines",
+        "receipts_docs",
+        "receipts_aviza",
+        "receipts_unloads",
+        "receipts_articles",
+        "receipts_suppliers",
+        "receipts_countries",
+        "receipts_brutto_kg",
+        "receipts_consumables_kg",
+        "receipts_equipment_kg",
+        "receipts_cbm",
+    ]
+    keep = [col for col in keep if col in frame.columns]
+    if not keep:
+        return pd.DataFrame()
+    base = frame[keep].copy().apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    out = pd.DataFrame(index=base.index)
+    for col in keep:
+        for lag in (1, 2, 5, 10):
+            out[f"{col}_lag{lag}"] = base[col].shift(lag)
+        out[f"{col}_roll5"] = base[col].rolling(5, min_periods=1).mean().shift(1)
+        out[f"{col}_roll10"] = base[col].rolling(10, min_periods=1).mean().shift(1)
+    return out.ffill().bfill().fillna(0.0)
+
+
+def build_exog_frame(base_dir: Path, force_refresh: bool = False) -> pd.DataFrame:
+    parts: List[pd.DataFrame] = []
+
+    market = load_market_signals_cached(str(base_dir), force_refresh=force_refresh)
+    if market is not None and not market.empty:
+        cols = [col for col in market.columns if col.endswith("_5d_pct") or col.endswith("_20d_pct") or col in {"esab_close", "brent_usd_bbl", "copper_usd_t", "vix_index"}]
+        if cols:
+            parts.append(market[cols].shift(1).ffill().bfill())
+
+    receipts = load_receipts_features_cached(str(base_dir))
+    receipts_exog = _prepare_receipts_exog(receipts)
+    if receipts_exog is not None and not receipts_exog.empty:
+        parts.append(receipts_exog)
+
+    if not parts:
+        return pd.DataFrame()
+    return pd.concat(parts, axis=1).sort_index().ffill().bfill()
 
 
 def metrics_for_display(metrics_map: Dict[str, object], model_key: str):
     return metrics_map.get(model_key)
+
+
+def _render_how_to_read(title: str, bullets: List[str], expanded: bool = False) -> None:
+    with st.expander(title, expanded=expanded):
+        for bullet in bullets:
+            st.markdown(f"- {bullet}")
 
 
 
@@ -1202,6 +1265,19 @@ def _render_operational_tab(
         st.error("Chybí denní KPI CSV.")
         return
 
+    _render_how_to_read(
+        "Jak číst tento pohled",
+        [
+            "Plná čára je historie jednotlivých roků. Přerušovaná čára je predikce pro aktuální rok v budoucích dnech.",
+            "Predikce nikdy nepřepisuje minulost. Historie zůstává skutečná a forecast se přidává jen dopředu.",
+            "Jednodušší modely stojí hlavně na sezónnosti stejného dne, krátkém trendu a kalendářním režimu. Ridge externí navíc používá veřejné signály a příjmy.",
+            "Příjmy vstupují přes denní receipt features: počet dokladů, avíz, vykládek, řádků, bruto kg a hlavně consumables kg v několika zpožděních.",
+            "Svátky jsou brané jako zvláštní provozní režim. Model je nebere jako normální pracovní den, ale jako samostatný kalendářní signál.",
+            "Detaily dole ukazují tabulku historie vs predikce a backtest modelů, tedy jak si modely vedly na minulých oknech.",
+        ],
+        expanded=False,
+    )
+
     shift_opts = ["all"]
     if shift_df is not None and not shift_df.empty and shift_key in shift_df.columns:
         shift_opts += sorted(shift_df[shift_key].dropna().astype(str).unique().tolist())
@@ -1290,6 +1366,12 @@ def _render_operational_tab(
         )
     with ctl2:
         manual_adj = st.slider("Korekce predikce (%)", -20, 20, 0, key=f"{key_prefix}_adj_new", disabled=not show_forecast)
+
+    st.caption(
+        "Model 10 Ridge externí používá kombinaci veřejných market signálů a receipt features z příjmů. "
+        "Model 11 Smart blend míchá modely podle rolling backtestu a zůstane u vítěze, když mix nepomáhá. "
+        "Svátky se do modelu promítají jako jiný režim než běžný pracovní den."
+    )
 
     grids: Dict[str, pd.DataFrame] = {}
     forecasts: Dict[str, pd.DataFrame] = {}
@@ -1458,10 +1540,24 @@ def tab_predikce_v2(src: Sources, base_dir: Path) -> None:
         )
 
     exog = build_exog_frame(base_dir, force_refresh=force_refresh)
+    receipts = load_receipts_features_cached(str(base_dir))
     series = prepare_operational_series(df, metric)
     future_dates = future_operating_dates(series, horizon)
     results, metrics_map = forecast_all_models(series, future_dates, exog, horizon_for_backtest=min(max(5, horizon), 14))
     ranking = backtest_table(metrics_map)
+
+    _render_how_to_read(
+        "Jak číst predikci a z čeho vychází",
+        [
+            "Backtest porovnává modely na posledních rolling oknech. Nižší WAPE znamená přesnější model v poměru k objemu.",
+            "Ridge interní používá jen provozní historii vybrané metriky. Ridge externí k tomu přidává veřejné indexy a příjmy.",
+            "Příjmy jsou zapojené přes denní features: doklady, avíza, vykládky, řádky, bruto kg, consumables kg, suppliers a countries.",
+            "Receipt features se do modelu dávají v několika zpožděních, aby forecast neviděl budoucnost, ale jen známý stav z minulých dnů.",
+            "Svátky se chovají podobně jako zvláštní provozní režim. U horizontu pracovních dnů se svátek nepočítá jako běžný pracovní den.",
+            "Smart blend není marketingový průměr. Váhy bere z backtestu a když kombinace nepomáhá, drží se nejlepšího modelu.",
+        ],
+        expanded=False,
+    )
 
     if exog is not None and not exog.empty:
         latest = exog.ffill().iloc[-1]
@@ -1473,7 +1569,19 @@ def tab_predikce_v2(src: Sources, base_dir: Path) -> None:
         e2.metric("Brent 20D", fmt_pct(brent_20d / 100 if pd.notna(brent_20d) else np.nan, 1))
         e3.metric("Copper 20D", fmt_pct(copper_20d / 100 if pd.notna(copper_20d) else np.nan, 1))
         e4.metric("VIX 5D", fmt_pct(vix_5d / 100 if pd.notna(vix_5d) else np.nan, 1))
-        st.caption("Externí signály se sbírají automaticky do lokální cache a používají se hlavně pro model `Ridge externí`.")
+        st.caption("Veřejné signály se sbírají do lokální cache a používají se hlavně pro model `Ridge externí`.")
+
+    if receipts is not None and not receipts.empty:
+        latest_receipts = receipts.sort_index().iloc[-1]
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("Příjem doklady", fmt_num(latest_receipts.get("receipts_docs"), 0))
+        r2.metric("Příjem avíza", fmt_num(latest_receipts.get("receipts_aviza"), 0))
+        r3.metric("Příjem vykládky", fmt_num(latest_receipts.get("receipts_unloads"), 0))
+        r4.metric("Příjem consumables kg", fmt_num(latest_receipts.get("receipts_consumables_kg"), 1))
+        st.caption(
+            "Příjmy nejsou jen bokem. Do exog signálů vstupují jako denní receipt features a hlavně pomáhají u tlakových dnů, výdeje a kontejnerů."
+        )
+    st.caption("Horizont pracovních dnů přeskočí víkendy i české státní svátky, aby se plán neplet s nepracovními dny.")
 
     tail = series.tail(70).reset_index()
     tail.columns = ["date", "value"]
@@ -1510,10 +1618,13 @@ def tab_predikce_v2(src: Sources, base_dir: Path) -> None:
         weights["weight"] = weights["weight"].map(lambda v: fmt_pct(v, 1))
         st.dataframe(weights, width="stretch")
 
-    with st.expander("Poznámka k externím signálům", expanded=False):
+    with st.expander("Co je teď zakomponováno v modelu", expanded=False):
         st.write(
-            "Aktuálně sledujeme ESAB close, Brent, Copper a VIX jako dostupné tržní proxy. "
-            "Další krok pro ještě přesnější forecast je napojit přímo export ceníků nebo produktových cen ESAB."
+            "Model 10 Ridge externí teď používá dvě vrstvy: "
+            "1) veřejné market proxy jako ESAB close, Brent, Copper a VIX, "
+            "2) receipt features z příjmů jako doklady, avíza, vykládky, řádky, bruto kg a consumables kg. "
+            "Tyto receipt features jsou pro forecast praktičtější než samotná cena ESAB, protože popisují skutečný tlak na sklad. "
+            "Zároveň model bere svátky jako samostatný kalendářní režim, takže sváteční den není modelován jako normální pracovní pondělí nebo středa."
         )
 
 
